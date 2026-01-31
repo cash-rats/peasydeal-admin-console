@@ -80,6 +80,31 @@ export async function getProductDraft(draftId: string): Promise<ProductDraft> {
   return response.json();
 }
 
+export async function updateProductDraft(
+  draftId: string,
+  payload: ProductDraftPayload
+): Promise<ProductDraft> {
+  const response = await fetch(
+    withApiBaseUrl(`/v1/product-drafts/${draftId}`),
+    {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    const message =
+      typeof err?.message === "string" ? err.message : "Failed to update draft";
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
 export async function publishProductDraft(
   draftId: string
 ): Promise<{ draft_id: string; status: ProductDraftStatus; product_id: string }> {

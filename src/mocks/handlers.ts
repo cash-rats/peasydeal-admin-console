@@ -199,4 +199,33 @@ export const handlers = [
       status: "REJECTED",
     });
   }),
+
+  http.patch("*/v1/product-drafts/:draftId", async ({ params, request }) => {
+    const draftId = String((params as Record<string, string>).draftId);
+    const stored = drafts.get(draftId);
+    if (!stored) {
+      return HttpResponse.json({ message: "Not found" }, { status: 404 });
+    }
+
+    const updates = (await request.json().catch(() => null)) as
+      | ProductDraftPayload
+      | null;
+
+    if (!updates) {
+      return HttpResponse.json({ message: "Invalid payload" }, { status: 400 });
+    }
+
+    const next: StoredDraft = {
+      ...ensurePayload(stored),
+      draft: {
+        ...ensurePayload(stored).draft,
+        ...updates,
+      },
+      updated_at_ms: nowMs(),
+    };
+
+    drafts.set(draftId, next);
+
+    return HttpResponse.json(next);
+  }),
 ];
