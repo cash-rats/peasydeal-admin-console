@@ -130,5 +130,10 @@ export async function rejectProductDraft(
 }
 
 export function isTerminalStatus(status: ProductDraftStatus): boolean {
-  return status === "PUBLISHED" || status === "FAILED" || status === "REJECTED";
+  return (
+    status === "READY_FOR_REVIEW" ||
+    status === "PUBLISHED" ||
+    status === "FAILED" ||
+    status === "REJECTED"
+  );
 }
