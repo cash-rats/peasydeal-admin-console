@@ -10,20 +10,29 @@ export type ProductDraftStatus =
   | "FAILED"
   | "REJECTED";
 
+export type ProductDraftPayload = {
+  captured_at?: string | null;
+  currency?: string | null;
+  description?: string | null;
+  images?: string[] | null;
+  price?: string | number | null;
+  source?: string | null;
+  status?: string | null;
+  title?: string | null;
+  url?: string | null;
+  [key: string]: unknown;
+};
+
 export type ProductDraft = {
-  draft_id: string;
+  id: string;
   status: ProductDraftStatus;
-  source_url: string;
-  input_hints: Record<string, unknown> | null;
-  draft_payload: Record<string, unknown> | null;
-  validation_errors: unknown[] | null;
-  error_message: string | null;
-  created_at: string;
-  updated_at: string;
-  published_at?: string | null;
-  published_product_id?: string | null;
-  rejected_at?: string | null;
-  rejected_reason?: string | null;
+  draft: ProductDraftPayload | null;
+  error: string | null;
+  created_by: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  published_at_ms: number | null;
+  published_product_id: string | null;
 };
 
 export type CreateDraftRequest = {
@@ -32,7 +41,7 @@ export type CreateDraftRequest = {
 
 export async function enqueueCrawlJob(
   body: CreateDraftRequest
-): Promise<{ ok: boolean; event_id: string }> {
+): Promise<{ ok?: boolean; id: string }> {
   const response = await fetch(withApiBaseUrl("/v1/crawl/enqueue"), {
     method: "POST",
     headers: {
@@ -55,7 +64,7 @@ export async function enqueueCrawlJob(
 
 export async function getProductDraft(draftId: string): Promise<ProductDraft> {
   const response = await fetch(
-    withApiBaseUrl(`/admin/ai/product-drafts/${draftId}`),
+    withApiBaseUrl(`/v1/product-drafts/${draftId}`),
     {
       method: "GET",
     }
@@ -75,7 +84,7 @@ export async function publishProductDraft(
   draftId: string
 ): Promise<{ draft_id: string; status: ProductDraftStatus; product_id: string }> {
   const response = await fetch(
-    withApiBaseUrl(`/admin/ai/product-drafts/${draftId}/publish`),
+    withApiBaseUrl(`/v1/product-drafts/${draftId}/publish`),
     {
       method: "POST",
       headers: {
@@ -100,7 +109,7 @@ export async function rejectProductDraft(
   reason?: string
 ): Promise<{ draft_id: string; status: ProductDraftStatus }> {
   const response = await fetch(
-    withApiBaseUrl(`/admin/ai/product-drafts/${draftId}/reject`),
+    withApiBaseUrl(`/v1/product-drafts/${draftId}/reject`),
     {
       method: "POST",
       headers: {

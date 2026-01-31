@@ -212,18 +212,22 @@ export function AiProductDraftShow() {
 
                 <div className="text-sm">
                   <div className="text-muted-foreground">Source URL</div>
-                  <a
-                    className="break-all underline underline-offset-4"
-                    href={draft.source_url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {draft.source_url}
-                  </a>
+                  {draft.draft?.url ? (
+                    <a
+                      className="break-all underline underline-offset-4"
+                      href={draft.draft.url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {draft.draft.url}
+                    </a>
+                  ) : (
+                    <div className="text-muted-foreground">—</div>
+                  )}
                 </div>
 
                 <div className="text-xs text-muted-foreground">
-                  Updated: {new Date(draft.updated_at).toLocaleString()}
+                  Updated: {new Date(draft.updated_at_ms).toLocaleString()}
                 </div>
               </div>
 
@@ -233,7 +237,7 @@ export function AiProductDraftShow() {
                 <Alert variant="destructive">
                   <AlertTitle>Draft failed</AlertTitle>
                   <AlertDescription>
-                    {draft.error_message ?? "No error message provided."}
+                    {draft.error ?? "No error message provided."}
                   </AlertDescription>
                 </Alert>
               )}
@@ -242,9 +246,7 @@ export function AiProductDraftShow() {
                 <Alert>
                   <AlertTitle>Draft rejected</AlertTitle>
                   <AlertDescription>
-                    {draft.rejected_reason
-                      ? `Reason: ${draft.rejected_reason}`
-                      : "No reason provided."}
+                    No reason provided.
                   </AlertDescription>
                 </Alert>
               )}
@@ -288,7 +290,7 @@ export function AiProductDraftShow() {
                       </CardHeader>
                       <CardContent>
                         <pre className="max-h-[420px] overflow-auto rounded-md bg-muted p-3 text-xs">
-                          {JSON.stringify(draft.draft_payload, null, 2)}
+                          {JSON.stringify(draft.draft, null, 2)}
                         </pre>
                       </CardContent>
                     </Card>

@@ -48,11 +48,11 @@ export function AiProductDraftCreate() {
 
       open?.({
         type: "success",
-        message: result.ok ? "Enqueued" : "Enqueue returned not ok",
-        description: `Event ID: ${result.event_id}`,
+        message: result.ok === false ? "Enqueue returned not ok" : "Enqueued",
+        description: `Draft ID: ${result.id}`,
       });
 
-      navigate(`/products/ai-import/${result.event_id}`);
+      navigate(`/products/ai-import/${result.id}`);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown error";
       setError(message);

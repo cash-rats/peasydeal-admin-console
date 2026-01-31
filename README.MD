@@ -35,11 +35,17 @@ To point the admin console at a different backend origin, set:
 
 ### API mocks (MSW)
 
-This repo uses MSW for local mocks in development.
+This repo supports MSW for local mocks in development (opt-in).
 
 ```bash
     pnpm install
     pnpm dlx msw init public/ --save
+```
+
+Enable MSW:
+
+```bash
+    export VITE_ENABLE_MSW="true"
 ```
 
 ### Building for production.

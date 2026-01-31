@@ -115,32 +115,31 @@ This enables “show evidence” in the review UI for critical specs (dimensions
 
 > The frontend talks to backend APIs only. Backend owns Turso writes/reads, RabbitMQ enqueue, and publish validation/side effects.
 
-### 6.1 Create draft
-**POST** `/admin/ai/product-drafts`
+### Integration note: `id` vs `draft_id`
+If `POST /v1/crawl/enqueue` returns an `id`, decide whether that id is:
+1) the same identifier used by `GET /v1/product-drafts/{id}`, or
+2) only a queue/event identifier (in which case backend should expose a resolver API to map `id → draft_id`).
+
+### 6.1 Enqueue crawl (creates draft)
+**POST** `/v1/crawl/enqueue`
 
 Request body:
 ```json
 {
-  "source_url": "https://example.com/product/123",
-  "hints": {
-    "language": "zh-TW",
-    "category_id": 5710,
-    "vendor": "example-vendor",
-    "target_margin": 0.35
-  }
+  "url": "https://example.com/product/123"
 }
 ```
 
 Response:
 ```json
 {
-  "draft_id": "uuid",
-  "status": "QUEUED_FOR_DRAFT"
+  "ok": true,
+  "id": "uuid"
 }
 ```
 
 ### 6.2 Get draft (status + payload)
-**GET** `/admin/ai/product-drafts/{draft_id}`
+**GET** `/v1/product-drafts/{draft_id}`
 
 Response:
 ```json
@@ -156,7 +155,7 @@ Response:
 ```
 
 ### 6.3 List drafts (for admin queue)
-**GET** `/admin/ai/product-drafts?status=READY_FOR_REVIEW&limit=50`
+**GET** `/v1/product-drafts?status=READY_FOR_REVIEW&limit=50`
 
 Response:
 ```json
@@ -169,10 +168,10 @@ Response:
 ```
 
 ### 6.4 Retry a failed draft
-**POST** `/admin/ai/product-drafts/{draft_id}/retry`
+**POST** `/v1/product-drafts/{draft_id}/retry`
 
 ### 6.5 Publish draft → create product
-**POST** `/admin/ai/product-drafts/{draft_id}/publish`
+**POST** `/v1/product-drafts/{draft_id}/publish`
 
 Request:
 ```json
@@ -191,7 +190,7 @@ Response:
 ```
 
 ### 6.6 Reject draft (optional)
-**POST** `/admin/ai/product-drafts/{draft_id}/reject`
+**POST** `/v1/product-drafts/{draft_id}/reject`
 
 
 ---
@@ -289,7 +288,7 @@ If validation fails:
 - Validate URL and create draft record (`status=QUEUED_FOR_DRAFT`)
 
 ### Poll draft
-- Poll Turso (or `GET /admin/ai/product-drafts/{id}`) every N seconds until terminal state
+- Poll draft status (or `GET /v1/product-drafts/{id}`) every N seconds until terminal state
 
 ### Optional realtime
 - Implement `liveProvider` and broadcast draft status changes

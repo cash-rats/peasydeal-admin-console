@@ -51,9 +51,9 @@ Implement a small “URL gate” on the client:
 
 ### Step 3 — Create draft via backend API (status=QUEUED_FOR_DRAFT)
 On submit:
-- Call backend `POST /admin/ai/product-drafts` with `{ source_url, hints }`.
+- Call backend `POST /v1/crawl/enqueue` with `{ url }`.
 - Backend creates `product_drafts` row in Turso (`status=QUEUED_FOR_DRAFT`) and enqueues the crawl job (RabbitMQ).
-- Return/display `draft_id` immediately and route user to the draft detail view.
+- Return/display `id` (draft id) immediately and route user to the draft detail view.
 
 **Deliverable:** one click creates a draft and shows “Queued” state.
 
@@ -61,7 +61,7 @@ On submit:
 After creation:
 - Display a status timeline/progress UI for:
   `QUEUED_FOR_DRAFT / CRAWLING / DRAFTING / READY_FOR_REVIEW / (PUBLISHED|FAILED|REJECTED)`
-- Poll backend `GET /admin/ai/product-drafts/{draft_id}` (e.g. every 2–5 seconds) until terminal state.
+- Poll backend `GET /v1/product-drafts/{draft_id}` (e.g. every 2–5 seconds) until terminal state.
 - Handle edge cases:
   - draft not found (deleted/permission)
   - “stuck” drafts (show “Retry” CTA if supported)
@@ -80,10 +80,10 @@ When `status=READY_FOR_REVIEW`:
 ### Step 6 — Publish / Reject actions
 From `READY_FOR_REVIEW`:
 - **Publish**:
-  - call backend publish API (e.g. `POST /admin/ai/product-drafts/{id}/publish`)
+  - call backend publish API (e.g. `POST /v1/product-drafts/{id}/publish`)
   - on success: show `PUBLISHED` and deep-link to the created product (via `published_product_id`)
 - **Reject**:
-  - call backend reject API (e.g. `POST /admin/ai/product-drafts/{id}/reject` with optional reason)
+  - call backend reject API (e.g. `POST /v1/product-drafts/{id}/reject` with optional reason)
   - keep the draft in the audit trail; don’t delete by default
 
 **Deliverable:** end-to-end operator loop: URL → READY_FOR_REVIEW → PUBLISHED/REJECTED.
@@ -101,7 +101,7 @@ Add a simple list view:
 ## Mock Data Strategy (UI/UX First)
 
 To build UI/UX without blocking on backend:
-- Prefer **MSW** (Mock Service Worker) to mock `POST /admin/ai/product-drafts`, `GET /admin/ai/product-drafts/:id`, `POST /publish`, `POST /reject`.
+- Prefer **MSW** (Mock Service Worker) to mock `POST /v1/crawl/enqueue`, `GET /v1/product-drafts/:id`, `POST /publish`, `POST /reject`.
 - Use a small set of fixtures to represent each state:
   - in-flight: `QUEUED_FOR_DRAFT`, `CRAWLING`, `DRAFTING`
   - terminal: `READY_FOR_REVIEW`, `PUBLISHED`, `FAILED`, `REJECTED`
@@ -114,6 +114,25 @@ To build UI/UX without blocking on backend:
 - `FAILED` drafts show a useful error and are retryable if the backend supports it.
 
 ---
+
+## Next Tasks (Backend Integration + UX Polish)
+
+### Backend integration
+- Confirm that `id` (from `POST /v1/crawl/enqueue`) is the draft id used by `GET /v1/product-drafts/{id}`.
+- Implement and document the real draft endpoints (paths + request/response JSON):
+  - `GET /v1/product-drafts/:id` (polling)
+  - `POST /v1/product-drafts/:id/publish`
+  - `POST /v1/product-drafts/:id/reject`
+- Replace MSW mocks for the above endpoints with real backend calls (keep MSW for UI development only).
+
+### UI/UX improvements (frontend-owned)
+- Replace “raw JSON only” review with a minimal summary view:
+  - title, primary image preview, variant count, price range, key attributes
+  - keep backend validation authoritative (frontend doesn’t block publish)
+- Add a drafts queue/list page (optional but recommended for operators):
+  - tabs: `READY_FOR_REVIEW`, `FAILED`, `PUBLISHED`, `REJECTED`
+  - click row → opens draft detail
+- After publish: deep-link to the created product detail page (once route format is confirmed).
 
 ## Open Questions (to finalize sequencing and integration)
 

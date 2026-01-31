@@ -8,19 +8,27 @@ export type ProductDraftStatus =
   | "FAILED"
   | "REJECTED";
 
-export type ProductDraft = {
-  draft_id: string;
-  status: ProductDraftStatus;
-  source_url: string;
-  input_hints: Record<string, unknown> | null;
-  draft_payload: Record<string, unknown> | null;
-  validation_errors: unknown[] | null;
-  error_message: string | null;
-  created_at: string;
-  updated_at: string;
-  published_at?: string | null;
-  published_product_id?: string | null;
-  rejected_at?: string | null;
-  rejected_reason?: string | null;
+export type ProductDraftPayload = {
+  captured_at?: string | null;
+  currency?: string | null;
+  description?: string | null;
+  images?: string[] | null;
+  price?: string | number | null;
+  source?: string | null;
+  status?: string | null;
+  title?: string | null;
+  url?: string | null;
+  [key: string]: unknown;
 };
 
+export type ProductDraft = {
+  id: string;
+  status: ProductDraftStatus;
+  draft: ProductDraftPayload | null;
+  error: string | null;
+  created_by: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  published_at_ms: number | null;
+  published_product_id: string | null;
+};

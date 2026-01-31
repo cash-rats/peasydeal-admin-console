@@ -1,13 +1,13 @@
 import { http, HttpResponse } from "msw";
 
-import type { ProductDraft, ProductDraftStatus } from "./types";
+import type { ProductDraft, ProductDraftPayload, ProductDraftStatus } from "./types";
 
-type StoredDraft = Omit<ProductDraft, "draft_id"> & { id: string };
+type StoredDraft = ProductDraft;
 
 const drafts = new Map<string, StoredDraft>();
 
-function nowIso(): string {
-  return new Date().toISOString();
+function nowMs(): number {
+  return Date.now();
 }
 
 function newId(): string {
@@ -21,10 +21,10 @@ function computeStatus(draft: StoredDraft): ProductDraftStatus {
   if (draft.status === "PUBLISHED" || draft.status === "FAILED") return draft.status;
   if (draft.status === "REJECTED") return draft.status;
 
-  const elapsedMs = Date.now() - new Date(draft.created_at).getTime();
+  const elapsedMs = Date.now() - draft.created_at_ms;
   const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
 
-  if (draft.source_url.includes("fail") && elapsedSeconds >= 4) {
+  if (draft.draft?.url?.includes("fail") && elapsedSeconds >= 4) {
     return "FAILED";
   }
 
@@ -35,77 +35,29 @@ function computeStatus(draft: StoredDraft): ProductDraftStatus {
 }
 
 function ensurePayload(draft: StoredDraft): StoredDraft {
-  if (draft.draft_payload) return draft;
+  if (draft.draft) return draft;
+
+  const url = draft.draft?.url ?? null;
+  const payload: ProductDraftPayload = {
+    captured_at: new Date().toISOString(),
+    currency: "TWD",
+    description: "Mock description generated from the supplier page.",
+    images: ["https://picsum.photos/seed/peasydeal/640/640"],
+    price: "499",
+    source: "shopee",
+    status: "ok",
+    title: "Mock Product Title",
+    url,
+  };
 
   return {
     ...draft,
-    draft_payload: {
-      title: "Mock Product Title",
-      brand: "Mock Brand",
-      description_html: "<p>Mock description generated from the supplier page.</p>",
-      images: [
-        {
-          url: "https://picsum.photos/seed/peasydeal/640/640",
-          alt: "Mock image",
-          position: 1,
-        },
-      ],
-      variants: [
-        {
-          sku: "MOCK-SKU-001",
-          option_values: { color: "Black", size: "M" },
-          price: 499,
-          compare_at_price: 699,
-          inventory: 50,
-          weight_grams: 300,
-        },
-      ],
-      seo: {
-        slug: "mock-product-title",
-        meta_title: "Mock Product Title",
-        meta_description: "Mock meta description.",
-      },
-    },
-    validation_errors: [],
-  };
-}
-
-function toApiShape(draft: StoredDraft): ProductDraft {
-  const {
-    id: draft_id,
-    status,
-    source_url,
-    input_hints,
-    draft_payload,
-    validation_errors,
-    error_message,
-    created_at,
-    updated_at,
-    published_at,
-    published_product_id,
-    rejected_at,
-    rejected_reason,
-  } = draft;
-
-  return {
-    draft_id,
-    status,
-    source_url,
-    input_hints,
-    draft_payload,
-    validation_errors,
-    error_message,
-    created_at,
-    updated_at,
-    published_at,
-    published_product_id,
-    rejected_at,
-    rejected_reason,
+    draft: payload,
   };
 }
 
 export const handlers = [
-  http.post("*/api/crawl/enqueue", async ({ request }) => {
+  http.post("*/v1/crawl/enqueue", async ({ request }) => {
     const body = (await request.json().catch(() => null)) as
       | { url?: string }
       | null;
@@ -116,30 +68,26 @@ export const handlers = [
     }
 
     const id = newId();
-    const created_at = nowIso();
+    const created_at_ms = nowMs();
 
     const draft: StoredDraft = {
       id,
       status: "QUEUED_FOR_DRAFT",
-      source_url: url,
-      input_hints: null,
-      draft_payload: null,
-      validation_errors: null,
-      error_message: null,
-      created_at,
-      updated_at: created_at,
-      published_at: null,
+      draft: { url },
+      error: null,
+      created_by: "enqueue",
+      created_at_ms,
+      updated_at_ms: created_at_ms,
+      published_at_ms: null,
       published_product_id: null,
-      rejected_at: null,
-      rejected_reason: null,
     };
 
     drafts.set(id, draft);
 
-    return HttpResponse.json({ ok: true, event_id: id });
+    return HttpResponse.json({ ok: true, id });
   }),
 
-  http.get("*/admin/ai/product-drafts/:draftId", ({ params }) => {
+  http.get("*/v1/product-drafts/:draftId", ({ params }) => {
     const draftId = String((params as Record<string, string>).draftId);
     const stored = drafts.get(draftId);
     if (!stored) {
@@ -150,14 +98,14 @@ export const handlers = [
     let nextDraft: StoredDraft = stored;
 
     if (nextStatus !== stored.status) {
-      nextDraft = { ...stored, status: nextStatus, updated_at: nowIso() };
+      nextDraft = { ...stored, status: nextStatus, updated_at_ms: nowMs() };
     }
 
     if (nextStatus === "FAILED") {
       nextDraft = {
         ...nextDraft,
-        error_message:
-          nextDraft.error_message ??
+        error:
+          nextDraft.error ??
           "Mock failure: crawler could not fetch or parse the page.",
       };
     }
@@ -167,36 +115,36 @@ export const handlers = [
     }
 
     drafts.set(draftId, nextDraft);
-    return HttpResponse.json(toApiShape(nextDraft));
+    return HttpResponse.json(nextDraft);
   }),
 
-  http.get("*/admin/ai/product-drafts", ({ request }) => {
+  http.get("*/v1/product-drafts", ({ request }) => {
     const url = new URL(request.url);
     const statusFilter = url.searchParams.get("status");
     const items = Array.from(drafts.values())
       .map((draft) => {
         const nextStatus = computeStatus(draft);
         if (nextStatus !== draft.status) {
-          const nextDraft = { ...draft, status: nextStatus, updated_at: nowIso() };
+          const nextDraft = { ...draft, status: nextStatus, updated_at_ms: nowMs() };
           drafts.set(draft.id, nextDraft);
           return nextDraft;
         }
         return draft;
       })
       .filter((draft) => (statusFilter ? draft.status === statusFilter : true))
-      .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
+      .sort((a, b) => (a.updated_at_ms < b.updated_at_ms ? 1 : -1))
       .slice(0, 50)
       .map((draft) => ({
-        draft_id: draft.id,
+        id: draft.id,
         status: draft.status,
-        source_url: draft.source_url,
-        updated_at: draft.updated_at,
+        url: draft.draft?.url ?? null,
+        updated_at_ms: draft.updated_at_ms,
       }));
 
     return HttpResponse.json({ items, next_cursor: null });
   }),
 
-  http.post("*/admin/ai/product-drafts/:draftId/publish", ({ params }) => {
+  http.post("*/v1/product-drafts/:draftId/publish", ({ params }) => {
     const draftId = String((params as Record<string, string>).draftId);
     const stored = drafts.get(draftId);
     if (!stored) {
@@ -211,13 +159,13 @@ export const handlers = [
       );
     }
 
-    const published_at = nowIso();
+    const published_at_ms = nowMs();
     const published_product_id = newId();
     const next: StoredDraft = {
       ...ensurePayload(stored),
       status: "PUBLISHED",
-      updated_at: published_at,
-      published_at,
+      updated_at_ms: published_at_ms,
+      published_at_ms,
       published_product_id,
     };
 
@@ -230,24 +178,18 @@ export const handlers = [
     });
   }),
 
-  http.post("*/admin/ai/product-drafts/:draftId/reject", async ({ params, request }) => {
+  http.post("*/v1/product-drafts/:draftId/reject", ({ params }) => {
     const draftId = String((params as Record<string, string>).draftId);
     const stored = drafts.get(draftId);
     if (!stored) {
       return HttpResponse.json({ message: "Not found" }, { status: 404 });
     }
 
-    const body = (await request.json().catch(() => null)) as
-      | { reason?: string }
-      | null;
-
-    const rejected_at = nowIso();
+    const rejected_at_ms = nowMs();
     const next: StoredDraft = {
       ...stored,
       status: "REJECTED",
-      updated_at: rejected_at,
-      rejected_at,
-      rejected_reason: body?.reason?.trim() || null,
+      updated_at_ms: rejected_at_ms,
     };
 
     drafts.set(draftId, next);

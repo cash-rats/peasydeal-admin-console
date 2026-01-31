@@ -8,6 +8,7 @@ const root = createRoot(container);
 
 async function enableMocks() {
   if (!import.meta.env.DEV) return;
+  if (import.meta.env.VITE_ENABLE_MSW !== "true") return;
 
   try {
     const { worker } = await import("./mocks/browser");
