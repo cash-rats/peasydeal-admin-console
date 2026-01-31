@@ -1,3 +1,4 @@
+.env
 # Logs
 
 logs
@@ -27,3 +28,16 @@ _.sln
 
 # Supabase
 supabase/.temp
+
+# Agent / AI tool state (local)
+.agent/
+.agents/
+.claude/
+.calude/
+.codex/
+.continue
+.continue/
+.cursor/
+.gemini/
+.kiro
+.kiro/
