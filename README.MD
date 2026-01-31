@@ -23,6 +23,25 @@ Refine's hooks and components simplifies the development process and eliminates 
     pnpm dev
 ```
 
+### API base URL
+
+By default, the frontend calls same-origin API paths (e.g. `/api/crawl/enqueue`).
+
+To point the admin console at a different backend origin, set:
+
+```bash
+    export VITE_API_BASE_URL="http://localhost:8080"
+```
+
+### API mocks (MSW)
+
+This repo uses MSW for local mocks in development.
+
+```bash
+    pnpm install
+    pnpm dlx msw init public/ --save
+```
+
 ### Building for production.
 
 ```bash

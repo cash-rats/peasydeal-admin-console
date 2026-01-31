@@ -80,6 +80,7 @@
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.19",
     "globals": "^16.0.0",
+    "msw": "^2.11.0",
     "tailwindcss": "^4.1.4",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.30.1",
@@ -105,5 +106,10 @@
   },
   "refine": {
     "projectId": "x3b9Ua-yIONaz-rV1zQj"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
   }
 }

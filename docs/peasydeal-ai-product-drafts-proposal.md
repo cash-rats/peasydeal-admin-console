@@ -1,5 +1,5 @@
 
-# PeasyDeal — “AI Product Drafts” API Proposal (for Refine Admin Console)
+# PeasyDeal — “AI Product Drafts” Proposal (for Refine Admin Console)
 
 ## 1) Background
 
@@ -27,7 +27,7 @@ The admin console will be built with **Refine**; the draft flow integrates clean
 - Add a Refine UI entry point:
   - a page (`/products/ai-import`) or modal (“Import from URL”)
   - status/progress updates
-  - review & approve → create actual product record(s)
+  - review & publish → create actual product record(s)
 
 ### Non-goals (MVP)
 - Fully automated publishing without review (avoid compliance/factual issues)
@@ -47,10 +47,10 @@ The admin console will be built with **Refine**; the draft flow integrates clean
 **Option B: Modal in Products list (nice UX)**
 - “Import from URL” button opens modal form (e.g., `useModalForm` if you’re using Ant Design integration)
 
-### How Refine calls the backend
-- **Create Draft**: call backend custom endpoint using `useCustomMutation` (via `dataProvider.custom`)
-- **Poll Draft**: fetch status/details via `useCustom` (also via `dataProvider.custom`)
-- **Realtime (optional)**: integrate `liveProvider` to push draft status updates and reduce polling
+### How Refine integrates (updated)
+- **Create Draft**: send URL + optional hints to backend API; backend creates `product_drafts` in **SQLite (Turso)** with `status=QUEUED_FOR_DRAFT` and enqueues the crawl job (RabbitMQ)
+- **Poll Draft**: fetch status/details via backend API (polling is enough for MVP)
+- **Publish / Reject**: once `READY_FOR_REVIEW`, admin clicks publish/reject; backend validates + executes the action
 
 
 ---
@@ -59,12 +59,12 @@ The admin console will be built with **Refine**; the draft flow integrates clean
 
 ### High-level flow
 1) Admin submits URL
-2) API creates a `product_draft` record (`status=QUEUED`)
-3) Background job runs:
-   - Extract → Normalize → LLM draft → Validate
+2) Backend API validates URL and creates `product_draft` in Turso (`status=QUEUED_FOR_DRAFT`) and enqueues a crawling payload
+3) Backend worker processes the crawl/draft pipeline (RabbitMQ; already implemented):
+   - Crawl → Draft → Validate
 4) Draft becomes `READY_FOR_REVIEW`
-5) Admin reviews, edits if needed, then approves
-6) API creates real `products` / `product_variants` / `product_images` entries and marks draft `APPROVED`
+5) Admin reviews, edits if needed, then publishes or rejects
+6) On publish, API creates real `products` / `product_variants` / `product_images` entries and marks draft `PUBLISHED`
 
 ### Key design principle
 **Drafts are separate from Products.**
@@ -73,30 +73,30 @@ Drafts are a staging area for automation and human QA, preventing incomplete/inc
 
 ---
 
-## 5) Data Model (Supabase/Postgres-friendly)
+## 5) Data Model (SQLite / Turso-friendly)
 
 ### Table: `product_drafts`
 Suggested columns:
 - `id` (uuid, pk)
 - `status` (enum text):
-  `QUEUED | EXTRACTING | DRAFTING | VALIDATING | READY_FOR_REVIEW | APPROVED | FAILED | CANCELLED`
+  `FOUND | QUEUED_FOR_DRAFT | CRAWLING | DRAFTING | READY_FOR_REVIEW | PUBLISHED | FAILED | REJECTED`
 - `source_url` (text)
-- `input_hints` (jsonb) — user-provided hints (category, language, etc.)
-- `raw_extraction` (jsonb) — unmodified extraction result (for debugging)
-- `draft_payload` (jsonb) — normalized PeasyDeal product schema for review/import
-- `validation_errors` (jsonb)
+- `input_hints` (json) — user-provided hints (category, language, etc.)
+- `raw_extraction` (json) — unmodified extraction result (for debugging)
+- `draft_payload` (json) — normalized PeasyDeal product schema for review/import
+- `validation_errors` (json)
 - `error_message` (text)
 - `created_by` (text / uuid) — admin user id
-- `created_at`, `updated_at` (timestamptz)
-- `approved_at` (timestamptz)
-- `approved_product_id` (uuid, nullable)
-- `cost` (jsonb, optional) — token usage, extraction cost, etc.
+- `created_at`, `updated_at` (datetime)
+- `published_at` (datetime)
+- `published_product_id` (uuid, nullable)
+- `cost` (json, optional) — token usage, extraction cost, etc.
 
 ### Table: `product_draft_events` (optional but useful)
 Append-only log for auditing:
 - `id`, `draft_id`
-- `event_type` (STATUS_CHANGED, RETRIED, EDITED, APPROVED, FAILED)
-- `payload` (jsonb)
+- `event_type` (STATUS_CHANGED, RETRIED, EDITED, PUBLISHED, REJECTED, FAILED)
+- `payload` (json)
 - `created_at`, `created_by`
 
 ### Table: `product_draft_sources` (optional)
@@ -113,7 +113,7 @@ This enables “show evidence” in the review UI for critical specs (dimensions
 
 ## 6) API Specification (MVP)
 
-> Base path examples use `/admin/ai/*` but can be adjusted to match your Go/Vercel routing.
+> The frontend talks to backend APIs only. Backend owns Turso writes/reads, RabbitMQ enqueue, and publish validation/side effects.
 
 ### 6.1 Create draft
 **POST** `/admin/ai/product-drafts`
@@ -135,7 +135,7 @@ Response:
 ```json
 {
   "draft_id": "uuid",
-  "status": "QUEUED"
+  "status": "QUEUED_FOR_DRAFT"
 }
 ```
 
@@ -171,8 +171,8 @@ Response:
 ### 6.4 Retry a failed draft
 **POST** `/admin/ai/product-drafts/{draft_id}/retry`
 
-### 6.5 Approve draft → create product
-**POST** `/admin/ai/product-drafts/{draft_id}/approve`
+### 6.5 Publish draft → create product
+**POST** `/admin/ai/product-drafts/{draft_id}/publish`
 
 Request:
 ```json
@@ -185,13 +185,13 @@ Response:
 ```json
 {
   "draft_id": "uuid",
-  "status": "APPROVED",
+  "status": "PUBLISHED",
   "product_id": "uuid"
 }
 ```
 
-### 6.6 Cancel draft (optional)
-**POST** `/admin/ai/product-drafts/{draft_id}/cancel`
+### 6.6 Reject draft (optional)
+**POST** `/admin/ai/product-drafts/{draft_id}/reject`
 
 
 ---
@@ -273,12 +273,12 @@ Rules:
 If validation fails:
 - set `status=FAILED` or `READY_FOR_REVIEW` with warnings (choose based on severity)
 
-### Step E — Approve/Create Product
+### Step E — Publish/Create Product
 - Transactionally create:
   - product row
   - variants
   - images (optionally: download & rehost into your CDN/R2 for reliability)
-- Mark draft approved & link product id
+- Mark draft `PUBLISHED` & link product id
 
 
 ---
@@ -286,10 +286,10 @@ If validation fails:
 ## 9) Refine UI Implementation Outline
 
 ### Create draft (mutation)
-- Use `useCustomMutation` to POST `/admin/ai/product-drafts`
+- Validate URL and create draft record (`status=QUEUED_FOR_DRAFT`)
 
 ### Poll draft
-- Use `useCustom` to GET `/admin/ai/product-drafts/{id}` every N seconds until terminal state
+- Poll Turso (or `GET /admin/ai/product-drafts/{id}`) every N seconds until terminal state
 
 ### Optional realtime
 - Implement `liveProvider` and broadcast draft status changes
@@ -316,9 +316,9 @@ If validation fails:
 ## 11) Rollout Plan
 
 ### Phase 1 (MVP)
-- Create draft endpoint + background job
-- Store drafts in DB
-- Refine page with polling + review + approve
+- Refine page: validate URL → create draft record in Turso → polling UI
+- Backend worker: RabbitMQ crawl/draft pipeline updates statuses
+- Review UI: publish or reject
 
 ### Phase 2
 - Evidence/citations per field (`product_draft_sources`)
@@ -337,6 +337,6 @@ If validation fails:
 
 - Admin can paste a URL and get a draft within ~1–3 minutes for supported domains
 - Draft includes: title, description, images, at least one variant with price
-- Admin can edit draft fields and approve
-- Approve creates real product records without manual copy/paste
+- Admin can edit draft fields and publish
+- Publish creates real product records without manual copy/paste
 - Failed drafts are diagnosable (error message + raw extraction stored)

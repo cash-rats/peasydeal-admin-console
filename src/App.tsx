@@ -15,6 +15,7 @@ import { Layout } from "./components/refine-ui/layout/layout";
 import { Toaster } from "./components/refine-ui/notification/toaster";
 import { useNotificationProvider } from "./components/refine-ui/notification/use-notification-provider";
 import { ThemeProvider } from "./components/refine-ui/theme/theme-provider";
+import { Sparkles } from "lucide-react";
 import {
   BlogPostCreate,
   BlogPostEdit,
@@ -27,6 +28,7 @@ import {
   CategoryList,
   CategoryShow,
 } from "./pages/categories";
+import { AiProductDraftCreate, AiProductDraftShow } from "./pages/products/ai-import";
 
 function App() {
   return (
@@ -60,6 +62,14 @@ function App() {
                     canDelete: true,
                   },
                 },
+                {
+                  name: "ai_product_drafts",
+                  list: "/products/ai-import",
+                  meta: {
+                    label: "AI Import",
+                    icon: <Sparkles className="h-4 w-4" />,
+                  },
+                },
               ]}
               options={{
                 syncWithLocation: true,
@@ -90,6 +100,10 @@ function App() {
                     <Route path="create" element={<CategoryCreate />} />
                     <Route path="edit/:id" element={<CategoryEdit />} />
                     <Route path="show/:id" element={<CategoryShow />} />
+                  </Route>
+                  <Route path="/products">
+                    <Route path="ai-import" element={<AiProductDraftCreate />} />
+                    <Route path="ai-import/:id" element={<AiProductDraftShow />} />
                   </Route>
                   <Route path="*" element={<ErrorComponent />} />
                 </Route>
