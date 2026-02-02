@@ -37,7 +37,7 @@ function computeStatus(draft: StoredDraft): ProductDraftStatus {
 function ensurePayload(draft: StoredDraft): StoredDraft {
   if (draft.draft) return draft;
 
-  const url = draft.draft?.url ?? null;
+  const url = null;
   const payload: ProductDraftPayload = {
     captured_at: new Date().toISOString(),
     currency: "TWD",
