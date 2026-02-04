@@ -1,3 +1,4 @@
+import { ClerkProvider } from "@clerk/clerk-react";
 import React from "react";
 import { createRoot } from "react-dom/client";
 
@@ -5,6 +6,12 @@ import App from "./App";
 
 const container = document.getElementById("root") as HTMLElement;
 const root = createRoot(container);
+
+const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+
+if (!clerkPublishableKey) {
+  throw new Error("Missing VITE_CLERK_PUBLISHABLE_KEY environment variable.");
+}
 
 async function enableMocks() {
   if (!import.meta.env.DEV) return;
@@ -25,7 +32,9 @@ async function enableMocks() {
 enableMocks().then(() => {
   root.render(
     <React.StrictMode>
-      <App />
+      <ClerkProvider publishableKey={clerkPublishableKey}>
+        <App />
+      </ClerkProvider>
     </React.StrictMode>
   );
 });
