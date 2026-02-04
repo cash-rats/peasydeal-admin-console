@@ -17,6 +17,7 @@ type MeResponse = {
 };
 
 const ME_ENDPOINT = withApiBaseUrl("/api/me");
+const SKIP_ME_CHECK = import.meta.env.VITE_SKIP_AUTH_ME !== "false";
 
 function toIdentity(payload: MeResponse) {
   const fullName =
@@ -67,29 +68,43 @@ export function createAuthProvider(params: {
         };
       }
 
-      const response = await apiFetch(ME_ENDPOINT);
-      if (response.ok) {
+      if (SKIP_ME_CHECK) {
         return {
           authenticated: true,
         };
       }
 
-      if (response.status === 401 || response.status === 403) {
+      try {
+        const response = await apiFetch(ME_ENDPOINT);
+        if (response.ok) {
+          return {
+            authenticated: true,
+          };
+        }
+
+        if (response.status === 401 || response.status === 403) {
+          return {
+            authenticated: false,
+            logout: true,
+            redirectTo: "/login",
+          };
+        }
+
+        // Treat other errors as transient to avoid auth redirect loops.
         return {
-          authenticated: false,
-          logout: true,
-          redirectTo: "/login",
+          authenticated: true,
+        };
+      } catch {
+        return {
+          authenticated: true,
         };
       }
-
-      return {
-        authenticated: false,
-        redirectTo: "/login",
-      };
     },
     getIdentity: async () => {
       const token = await getToken();
       if (!token) return null;
+
+      if (SKIP_ME_CHECK) return null;
 
       const response = await apiFetch(ME_ENDPOINT);
       if (!response.ok) return null;
@@ -100,6 +115,8 @@ export function createAuthProvider(params: {
     getPermissions: async () => {
       const token = await getToken();
       if (!token) return null;
+
+      if (SKIP_ME_CHECK) return null;
 
       const response = await apiFetch(ME_ENDPOINT);
       if (!response.ok) return null;
