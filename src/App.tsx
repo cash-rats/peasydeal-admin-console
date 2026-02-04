@@ -110,7 +110,7 @@ function App() {
               }}
             >
               <Routes>
-                <Route path="/login" element={<Login />} />
+                <Route path="/login/*" element={<Login />} />
                 <Route
                   element={
                     <Authenticated key="protected" redirectOnFail="/login">
