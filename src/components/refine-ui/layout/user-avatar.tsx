@@ -4,9 +4,7 @@ import { cn } from "@/lib/utils";
 import { useGetIdentity } from "@refinedev/core";
 
 type User = {
-  id: number;
-  firstName: string;
-  lastName: string;
+  id: string;
   fullName: string;
   email: string;
   avatar?: string;

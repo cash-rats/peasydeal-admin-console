@@ -1,5 +1,9 @@
-import { SignInForm } from "@/components/refine-ui/form/sign-in-form";
+import { SignIn } from "@clerk/clerk-react";
 
 export const Login = () => {
-  return <SignInForm />;
+  return (
+    <div className="flex min-h-svh items-center justify-center px-6 py-8">
+      <SignIn routing="path" path="/login" />
+    </div>
+  );
 };

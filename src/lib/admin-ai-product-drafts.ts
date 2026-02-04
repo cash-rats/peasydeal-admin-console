@@ -1,4 +1,5 @@
 import { withApiBaseUrl } from "@/lib/api-base-url";
+import { apiFetch } from "@/lib/api-client";
 
 export type ProductDraftStatus =
   | "FOUND"
@@ -42,7 +43,7 @@ export type CreateDraftRequest = {
 export async function enqueueCrawlJob(
   body: CreateDraftRequest
 ): Promise<{ ok?: boolean; id: string }> {
-  const response = await fetch(withApiBaseUrl("/v1/crawl/enqueue"), {
+  const response = await apiFetch(withApiBaseUrl("/v1/admin/crawl/enqueue"), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -63,7 +64,7 @@ export async function enqueueCrawlJob(
 }
 
 export async function getProductDraft(draftId: string): Promise<ProductDraft> {
-  const response = await fetch(
+  const response = await apiFetch(
     withApiBaseUrl(`/v1/product-drafts/${draftId}`),
     {
       method: "GET",
@@ -84,7 +85,7 @@ export async function updateProductDraft(
   draftId: string,
   payload: ProductDraftPayload
 ): Promise<ProductDraft> {
-  const response = await fetch(
+  const response = await apiFetch(
     withApiBaseUrl(`/v1/product-drafts/${draftId}`),
     {
       method: "PATCH",
@@ -108,7 +109,7 @@ export async function updateProductDraft(
 export async function publishProductDraft(
   draftId: string
 ): Promise<{ draft_id: string; status: ProductDraftStatus; product_id: string }> {
-  const response = await fetch(
+  const response = await apiFetch(
     withApiBaseUrl(`/v1/product-drafts/${draftId}/publish`),
     {
       method: "POST",
@@ -133,7 +134,7 @@ export async function rejectProductDraft(
   draftId: string,
   reason?: string
 ): Promise<{ draft_id: string; status: ProductDraftStatus }> {
-  const response = await fetch(
+  const response = await apiFetch(
     withApiBaseUrl(`/v1/product-drafts/${draftId}/reject`),
     {
       method: "POST",
