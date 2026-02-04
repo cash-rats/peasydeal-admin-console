@@ -107,5 +107,8 @@ export function createAuthProvider(params: {
       const payload = (await response.json()) as MeResponse;
       return payload.roles ?? null;
     },
+    onError: async (error) => {
+      return { error };
+    },
   };
 }
