@@ -37,7 +37,7 @@ type EditSnapshot = {
   currency: string;
   price: string;
   imageUrls: string[];
-  variations: VariationSnapshotItem[];
+  variationSnapshots: VariationSnapshotItem[];
 };
 
 type EditImageItem = {
@@ -94,7 +94,7 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
     imageUrls: Array.isArray(payload.images)
       ? payload.images.filter((item): item is string => typeof item === "string")
       : [],
-    variations: Array.isArray(payload.variations)
+    variationSnapshots: Array.isArray(payload.variations)
       ? payload.variations.map((item) => ({
           imageUrl:
             item && typeof item.image === "string"
@@ -125,7 +125,7 @@ function createEditState(snapshot: EditSnapshot): EditState {
     previewUrl: url,
   }));
 
-  const variations = snapshot.variations.map((variation) => ({
+  const variations = snapshot.variationSnapshots.map((variation) => ({
     id: newId(),
     type: "existing" as const,
     imageUrl: variation.imageUrl,
@@ -161,10 +161,10 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
     .map((image) => image.url as string);
   if (!isSameStringArray(existingUrls, snapshot.imageUrls)) return true;
 
-  if (state.variations.length !== snapshot.variations.length) return true;
+  if (state.variations.length !== snapshot.variationSnapshots.length) return true;
   for (let i = 0; i < state.variations.length; i += 1) {
     const current = state.variations[i];
-    const original = snapshot.variations[i];
+    const original = snapshot.variationSnapshots[i];
     if (!original) return true;
     if (current.type === "new") return true;
     if (current.imageUrl !== original.imageUrl) return true;
