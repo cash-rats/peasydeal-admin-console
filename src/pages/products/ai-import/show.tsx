@@ -37,6 +37,7 @@ type EditSnapshot = {
   currency: string;
   price: string;
   imageUrls: string[];
+  variations: VariationSnapshotItem[];
 };
 
 type EditImageItem = {
@@ -47,8 +48,25 @@ type EditImageItem = {
   previewUrl: string;
 };
 
+type VariationSnapshotItem = {
+  imageUrl: string;
+  position: string;
+  title: string;
+};
+
+type EditVariationItem = {
+  id: string;
+  type: "existing" | "new";
+  imageUrl: string;
+  title: string;
+  position: string;
+  file?: File;
+  previewUrl: string;
+};
+
 type EditState = EditSnapshot & {
   images: EditImageItem[];
+  variations: EditVariationItem[];
   isDirty: boolean;
 };
 
@@ -76,6 +94,19 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
     imageUrls: Array.isArray(payload.images)
       ? payload.images.filter((item): item is string => typeof item === "string")
       : [],
+    variations: Array.isArray(payload.variations)
+      ? payload.variations.map((item) => ({
+          imageUrl:
+            item && typeof item.image === "string"
+              ? item.image
+              : "",
+          position:
+            item && (typeof item.position === "number" || typeof item.position === "string")
+              ? String(item.position)
+              : "",
+          title: item && typeof item.title === "string" ? item.title : "",
+        }))
+      : [],
   };
 }
 
@@ -94,9 +125,19 @@ function createEditState(snapshot: EditSnapshot): EditState {
     previewUrl: url,
   }));
 
+  const variations = snapshot.variations.map((variation) => ({
+    id: newId(),
+    type: "existing" as const,
+    imageUrl: variation.imageUrl,
+    title: variation.title,
+    position: variation.position,
+    previewUrl: variation.imageUrl,
+  }));
+
   return {
     ...snapshot,
     images,
+    variations,
     isDirty: false,
   };
 }
@@ -118,7 +159,20 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
   const existingUrls = state.images
     .filter((image) => image.type === "existing" && image.url)
     .map((image) => image.url as string);
-  return !isSameStringArray(existingUrls, snapshot.imageUrls);
+  if (!isSameStringArray(existingUrls, snapshot.imageUrls)) return true;
+
+  if (state.variations.length !== snapshot.variations.length) return true;
+  for (let i = 0; i < state.variations.length; i += 1) {
+    const current = state.variations[i];
+    const original = snapshot.variations[i];
+    if (!original) return true;
+    if (current.type === "new") return true;
+    if (current.imageUrl !== original.imageUrl) return true;
+    if (current.title !== original.title) return true;
+    if (current.position !== original.position) return true;
+  }
+
+  return false;
 }
 
 function revokeNewImagePreviews(state: EditState | null) {
@@ -126,6 +180,15 @@ function revokeNewImagePreviews(state: EditState | null) {
   state.images.forEach((image) => {
     if (image.type === "new") {
       URL.revokeObjectURL(image.previewUrl);
+    }
+  });
+}
+
+function revokeNewVariationPreviews(state: EditState | null) {
+  if (!state) return;
+  state.variations.forEach((variation) => {
+    if (variation.type === "new") {
+      URL.revokeObjectURL(variation.previewUrl);
     }
   });
 }
@@ -157,6 +220,81 @@ function removeImage(state: EditState, image: EditImageItem): EditState {
   };
 }
 
+function addVariation(state: EditState): EditState {
+  const nextPosition = (() => {
+    const numeric = state.variations
+      .map((item) => Number.parseFloat(item.position))
+      .filter((value) => Number.isFinite(value));
+    if (!numeric.length) return "1";
+    return String(Math.max(...numeric) + 1);
+  })();
+
+  const item: EditVariationItem = {
+    id: newId(),
+    type: "new",
+    imageUrl: "",
+    title: "",
+    position: nextPosition,
+    previewUrl: "",
+  };
+
+  return {
+    ...state,
+    variations: [...state.variations, item],
+  };
+}
+
+function removeVariation(state: EditState, variation: EditVariationItem): EditState {
+  if (variation.type === "new" && variation.previewUrl) {
+    URL.revokeObjectURL(variation.previewUrl);
+  }
+
+  return {
+    ...state,
+    variations: state.variations.filter((item) => item.id !== variation.id),
+  };
+}
+
+function setVariationImageFromFile(
+  state: EditState,
+  variationId: string,
+  file: File
+): EditState {
+  if (!file.type.startsWith("image/")) return state;
+
+  const previewUrl = URL.createObjectURL(file);
+
+  return {
+    ...state,
+    variations: state.variations.map((item) => {
+      if (item.id !== variationId) return item;
+      if (item.type === "new" && item.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+      return {
+        ...item,
+        type: "new",
+        file,
+        imageUrl: "",
+        previewUrl,
+      };
+    }),
+  };
+}
+
+function updateVariationField(
+  state: EditState,
+  variationId: string,
+  updater: (item: EditVariationItem) => EditVariationItem
+): EditState {
+  return {
+    ...state,
+    variations: state.variations.map((item) =>
+      item.id === variationId ? updater(item) : item
+    ),
+  };
+}
+
 function toNullableString(value: string): string | null {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
@@ -185,12 +323,33 @@ async function toPayload(state: EditState): Promise<ProductDraftPayload> {
   );
   const images = [...existingUrls, ...newUrls];
 
+  const variations = await Promise.all(
+    state.variations.map(async (variation) => {
+      let image: string | null = null;
+      if (variation.type === "new" && variation.file) {
+        image = await fileToDataUrl(variation.file);
+      } else if (variation.imageUrl.trim().length) {
+        image = variation.imageUrl.trim();
+      }
+
+      const positionValue = variation.position.trim();
+      const positionNumber = positionValue.length ? Number(positionValue) : null;
+
+      return {
+        image,
+        position: Number.isFinite(positionNumber) ? positionNumber : null,
+        title: toNullableString(variation.title),
+      };
+    })
+  );
+
   return {
     title: toNullableString(state.title),
     description: toNullableString(state.description),
     currency: toNullableString(state.currency),
     price: toNullableString(state.price),
     images: images.length ? images : null,
+    variations: variations.length ? variations : [],
   };
 }
 
@@ -348,6 +507,7 @@ export function AiProductDraftShow() {
     if (!draftPayload) {
       setEditState((prev) => {
         revokeNewImagePreviews(prev);
+        revokeNewVariationPreviews(prev);
         return null;
       });
       editSnapshotRef.current = null;
@@ -358,6 +518,7 @@ export function AiProductDraftShow() {
     editSnapshotRef.current = snapshot;
     setEditState((prev) => {
       revokeNewImagePreviews(prev);
+      revokeNewVariationPreviews(prev);
       return createEditState(snapshot);
     });
   }, [draftPayload]);
@@ -369,6 +530,7 @@ export function AiProductDraftShow() {
   React.useEffect(() => {
     return () => {
       revokeNewImagePreviews(editStateRef.current);
+      revokeNewVariationPreviews(editStateRef.current);
     };
   }, []);
 
@@ -547,6 +709,7 @@ export function AiProductDraftShow() {
                           if (!editSnapshotRef.current) return;
                           setEditState((prev) => {
                             revokeNewImagePreviews(prev);
+                            revokeNewVariationPreviews(prev);
                             return createEditState(editSnapshotRef.current as EditSnapshot);
                           });
                         }}
@@ -662,6 +825,160 @@ export function AiProductDraftShow() {
                                 }
                                 placeholder="Describe the product"
                               />
+                            </div>
+
+                            <div className="flex flex-col gap-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <Label>Variations</Label>
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  {editState.variations.length ? (
+                                    <span>{editState.variations.length} item(s)</span>
+                                  ) : (
+                                    <span>No variations</span>
+                                  )}
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() =>
+                                      updateEditState((prev) => addVariation(prev))
+                                    }
+                                  >
+                                    Add variation
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {editState.variations.length === 0 ? (
+                                <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                                  No variations. This product will be created without variants.
+                                </div>
+                              ) : (
+                                <div className="flex flex-col gap-3">
+                                  {[...editState.variations]
+                                    .sort(
+                                      (a, b) =>
+                                        (Number(a.position) || 0) - (Number(b.position) || 0)
+                                    )
+                                    .map((variation) => (
+                                      <div
+                                        key={variation.id}
+                                        className="grid grid-cols-1 gap-3 rounded-lg border p-3 sm:grid-cols-12 sm:items-center"
+                                      >
+                                        <div className="sm:col-span-2">
+                                          <div className="flex items-center gap-2">
+                                            <div className="relative h-16 w-16 overflow-hidden rounded-md border bg-muted">
+                                              {variation.previewUrl ? (
+                                                <img
+                                                  src={variation.previewUrl}
+                                                  alt="Variation"
+                                                  className="h-full w-full object-cover"
+                                                  loading="lazy"
+                                                />
+                                              ) : (
+                                                <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
+                                                  No image
+                                                </div>
+                                              )}
+                                            </div>
+                                          </div>
+                                        </div>
+
+                                        <div className="sm:col-span-4 flex flex-col gap-1">
+                                          <Label className="text-xs">Image URL</Label>
+                                          <Input
+                                            value={variation.imageUrl}
+                                            placeholder="https://..."
+                                            onChange={(e) =>
+                                              updateEditState((prev) =>
+                                                updateVariationField(prev, variation.id, (item) => ({
+                                                  ...item,
+                                                  imageUrl: e.target.value,
+                                                  type: item.type === "existing" && e.target.value !== item.imageUrl
+                                                    ? "new"
+                                                    : item.type,
+                                                  file: undefined,
+                                                  previewUrl: e.target.value,
+                                                }))
+                                              )
+                                            }
+                                          />
+                                        </div>
+
+                                        <div className="sm:col-span-2 flex flex-col gap-1">
+                                          <Label className="text-xs">Title</Label>
+                                          <Input
+                                            value={variation.title}
+                                            placeholder="Variation title"
+                                            onChange={(e) =>
+                                              updateEditState((prev) =>
+                                                updateVariationField(prev, variation.id, (item) => ({
+                                                  ...item,
+                                                  title: e.target.value,
+                                                }))
+                                              )
+                                            }
+                                          />
+                                        </div>
+
+                                        <div className="sm:col-span-2 flex flex-col gap-1">
+                                          <Label className="text-xs">Position</Label>
+                                          <Input
+                                            value={variation.position}
+                                            type="number"
+                                            inputMode="numeric"
+                                            onChange={(e) =>
+                                              updateEditState((prev) =>
+                                                updateVariationField(prev, variation.id, (item) => ({
+                                                  ...item,
+                                                  position: e.target.value,
+                                                }))
+                                              )
+                                            }
+                                          />
+                                        </div>
+
+                                        <div className="sm:col-span-12 flex flex-wrap items-center gap-2 pt-1">
+                                          <Button
+                                            type="button"
+                                            variant="default"
+                                            size="sm"
+                                            className="whitespace-nowrap"
+                                            onClick={() => {
+                                              const input = document.createElement("input");
+                                              input.type = "file";
+                                              input.accept = "image/*";
+                                              input.onchange = (event) => {
+                                                const files = Array.from(
+                                                  (event.target as HTMLInputElement).files ?? []
+                                                );
+                                                const file = files[0];
+                                                if (file) {
+                                                  updateEditState((prev) =>
+                                                    setVariationImageFromFile(prev, variation.id, file)
+                                                  );
+                                                }
+                                              };
+                                              input.click();
+                                            }}
+                                          >
+                                            Upload image
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            variant="destructive"
+                                            size="icon"
+                                            onClick={() =>
+                                              updateEditState((prev) => removeVariation(prev, variation))
+                                            }
+                                          >
+                                            <X className="h-4 w-4" />
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                </div>
+                              )}
                             </div>
 
                             <div className="flex flex-col gap-2">
