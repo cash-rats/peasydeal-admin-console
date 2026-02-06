@@ -867,7 +867,22 @@ export function AiProductDraftShow() {
                                       >
                                         <div className="sm:col-span-2">
                                           <div className="flex items-center gap-2">
-                                            <div className="relative h-16 w-16 overflow-hidden rounded-md border bg-muted">
+                                            <div
+                                              className="relative h-16 w-16 overflow-hidden rounded-md border bg-muted"
+                                              onDragOver={(event) => {
+                                                event.preventDefault();
+                                              }}
+                                              onDrop={(event) => {
+                                                event.preventDefault();
+                                                const files = Array.from(event.dataTransfer.files);
+                                                const file = files.find((f) => f.type.startsWith("image/"));
+                                                if (file) {
+                                                  updateEditState((prev) =>
+                                                    setVariationImageFromFile(prev, variation.id, file)
+                                                  );
+                                                }
+                                              }}
+                                            >
                                               {variation.previewUrl ? (
                                                 <img
                                                   src={variation.previewUrl}
@@ -881,6 +896,9 @@ export function AiProductDraftShow() {
                                                 </div>
                                               )}
                                             </div>
+                                          </div>
+                                          <div className="pt-1 text-[10px] uppercase text-muted-foreground">
+                                            Drop image or use upload/URL
                                           </div>
                                         </div>
 
