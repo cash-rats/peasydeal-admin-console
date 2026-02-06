@@ -37,6 +37,7 @@ type EditSnapshot = {
   currency: string;
   price: string;
   imageUrls: string[];
+  url: string;
   variationSnapshots: VariationSnapshotItem[];
 };
 
@@ -94,6 +95,7 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
     imageUrls: Array.isArray(payload.images)
       ? payload.images.filter((item): item is string => typeof item === "string")
       : [],
+    url: typeof payload.url === "string" ? payload.url : "",
     variationSnapshots: Array.isArray(payload.variations)
       ? payload.variations.map((item) => ({
           imageUrl:
@@ -155,6 +157,7 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
   if (state.description !== snapshot.description) return true;
   if (state.currency !== snapshot.currency) return true;
   if (state.price !== snapshot.price) return true;
+  if (state.url !== snapshot.url) return true;
   if (state.images.some((image) => image.type === "new")) return true;
   const existingUrls = state.images
     .filter((image) => image.type === "existing" && image.url)
@@ -312,7 +315,11 @@ async function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-async function toPayload(state: EditState): Promise<ProductDraftPayload> {
+async function toPayload(
+  state: EditState,
+  status?: ProductDraftStatus | null,
+  url?: string | null
+): Promise<ProductDraftPayload> {
   const existingUrls = state.images
     .filter((image) => image.type === "existing" && image.url)
     .map((image) => image.url as string);
@@ -350,6 +357,8 @@ async function toPayload(state: EditState): Promise<ProductDraftPayload> {
     price: toNullableString(state.price),
     images: images.length ? images : null,
     variations: variations.length ? variations : [],
+    status: status ?? null,
+    url: url ?? state.url ?? null,
   };
 }
 
@@ -575,7 +584,7 @@ export function AiProductDraftShow() {
 
     setIsSaving(true);
     try {
-      const payload = await toPayload(editState);
+      const payload = await toPayload(editState, draft?.status ?? null);
       const updated = await updateProductDraft(draftId, payload);
       editSnapshotRef.current = toEditSnapshot(updated.draft ?? payload);
       setEditState((prev) => {

@@ -91,9 +91,9 @@ export async function updateProductDraft(
   payload: ProductDraftPayload
 ): Promise<ProductDraft> {
   const response = await apiFetch(
-    withApiBaseUrl(`/v1/product-drafts/${draftId}`),
+    withApiBaseUrl(`/v1/admin/product-drafts/${draftId}`),
     {
-      method: "PATCH",
+      method: "PUT",
       headers: {
         "content-type": "application/json",
       },
