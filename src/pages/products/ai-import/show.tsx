@@ -1,4 +1,21 @@
 import { useNotification } from "@refinedev/core";
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import React from "react";
 import { useNavigate, useParams } from "react-router";
 
@@ -29,7 +46,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { ListView, ListViewHeader } from "@/components/refine-ui/views/list-view";
 import { cn } from "@/lib/utils";
-import { ImagePlus, X } from "lucide-react";
+import { GripVertical, ImagePlus, X } from "lucide-react";
 
 type EditSnapshot = {
   title: string;
@@ -152,6 +169,15 @@ function isSameStringArray(a: string[], b: string[]): boolean {
   return true;
 }
 
+function normalizeVariationPositions(
+  variations: EditVariationItem[]
+): EditVariationItem[] {
+  return variations.map((variation, index) => ({
+    ...variation,
+    position: String(index),
+  }));
+}
+
 function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
   if (state.title !== snapshot.title) return true;
   if (state.description !== snapshot.description) return true;
@@ -229,24 +255,16 @@ function removeImage(state: EditState, image: EditImageItem): EditState {
 }
 
 function addVariation(state: EditState): EditState {
-  const nextPosition = (() => {
-    const numeric = state.variations
-      .map((item) => Number.parseFloat(item.position))
-      .filter((value) => Number.isFinite(value));
-    if (!numeric.length) return "1";
-    return String(Math.max(...numeric) + 1);
-  })();
-
   const item: EditVariationItem = {
     id: newId(),
     title: "",
-    position: nextPosition,
+    position: "0",
     images: [],
   };
 
   return {
     ...state,
-    variations: [...state.variations, item],
+    variations: normalizeVariationPositions([...state.variations, item]),
   };
 }
 
@@ -259,7 +277,9 @@ function removeVariation(state: EditState, variation: EditVariationItem): EditSt
 
   return {
     ...state,
-    variations: state.variations.filter((item) => item.id !== variation.id),
+    variations: normalizeVariationPositions(
+      state.variations.filter((item) => item.id !== variation.id)
+    ),
   };
 }
 
@@ -375,6 +395,47 @@ function updateVariationField(
       item.id === variationId ? updater(item) : item
     ),
   };
+}
+
+function SortableVariationRow({
+  id,
+  children,
+}: {
+  id: string;
+  children: React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "flex flex-col gap-3 rounded-lg border p-3",
+        isDragging ? "opacity-80 shadow-lg" : ""
+      )}
+    >
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">Variation</div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 cursor-grab active:cursor-grabbing"
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical className="h-4 w-4" />
+        </Button>
+      </div>
+      {children}
+    </div>
+  );
 }
 
 function toNullableString(value: string): string | null {
@@ -596,6 +657,37 @@ export function AiProductDraftShow() {
       });
     },
     []
+  );
+
+  const variationSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  const onVariationDragEnd = React.useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      updateEditState((prev) => {
+        const oldIndex = prev.variations.findIndex(
+          (variation) => variation.id === String(active.id)
+        );
+        const newIndex = prev.variations.findIndex(
+          (variation) => variation.id === String(over.id)
+        );
+        if (oldIndex < 0 || newIndex < 0) return prev;
+
+        return {
+          ...prev,
+          variations: normalizeVariationPositions(
+            arrayMove(prev.variations, oldIndex, newIndex)
+          ),
+        };
+      });
+    },
+    [updateEditState]
   );
 
   React.useEffect(() => {
@@ -952,16 +1044,17 @@ export function AiProductDraftShow() {
                                 </div>
                               ) : (
                                 <div className="flex flex-col gap-3">
-                                  {[...editState.variations]
-                                    .sort(
-                                      (a, b) =>
-                                        (Number(a.position) || 0) - (Number(b.position) || 0)
-                                    )
-                                    .map((variation) => (
-                                      <div
-                                        key={variation.id}
-                                        className="flex flex-col gap-3 rounded-lg border p-3"
-                                      >
+                                  <DndContext
+                                    sensors={variationSensors}
+                                    collisionDetection={closestCenter}
+                                    onDragEnd={onVariationDragEnd}
+                                  >
+                                    <SortableContext
+                                      items={editState.variations.map((variation) => variation.id)}
+                                      strategy={verticalListSortingStrategy}
+                                    >
+                                      {editState.variations.map((variation) => (
+                                        <SortableVariationRow key={variation.id} id={variation.id}>
                                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
                                           <div className="sm:col-span-7">
                                             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -1087,15 +1180,11 @@ export function AiProductDraftShow() {
                                               value={variation.position}
                                               type="number"
                                               inputMode="numeric"
-                                              onChange={(e) =>
-                                                updateEditState((prev) =>
-                                                  updateVariationField(prev, variation.id, (item) => ({
-                                                    ...item,
-                                                    position: e.target.value,
-                                                  }))
-                                                )
-                                              }
+                                              readOnly
                                             />
+                                            <div className="text-[10px] text-muted-foreground">
+                                              Drag to reorder (0-based)
+                                            </div>
                                           </div>
                                         </div>
 
@@ -1146,8 +1235,10 @@ export function AiProductDraftShow() {
                                             Remove variation
                                           </Button>
                                         </div>
-                                      </div>
-                                    ))}
+                                        </SortableVariationRow>
+                                      ))}
+                                    </SortableContext>
+                                  </DndContext>
                                 </div>
                               )}
                             </div>
