@@ -5,6 +5,9 @@ import {
   KeyboardSensor,
   PointerSensor,
   type DragEndEvent,
+  type DragStartEvent,
+  useDraggable,
+  useDroppable,
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
@@ -78,6 +81,9 @@ type EditVariationItem = {
   position: string;
   images: EditImageItem[];
 };
+
+type ImageContainerId = "main" | `variation:${string}`;
+type DragKind = "variation_row" | "image_item" | null;
 
 type EditState = EditSnapshot & {
   images: EditImageItem[];
@@ -397,6 +403,75 @@ function updateVariationField(
   };
 }
 
+function toVariationContainerId(variationId: string): ImageContainerId {
+  return `variation:${variationId}`;
+}
+
+function getVariationId(containerId: ImageContainerId): string | null {
+  if (!containerId.startsWith("variation:")) return null;
+  return containerId.slice("variation:".length) || null;
+}
+
+function moveImageBetweenContainers(
+  state: EditState,
+  sourceContainer: ImageContainerId,
+  targetContainer: ImageContainerId,
+  imageId: string
+): EditState {
+  if (sourceContainer === targetContainer) return state;
+
+  const sourceVariationId = getVariationId(sourceContainer);
+  const targetVariationId = getVariationId(targetContainer);
+
+  const sourceVariation =
+    sourceVariationId != null
+      ? state.variations.find((variation) => variation.id === sourceVariationId)
+      : null;
+  const targetVariation =
+    targetVariationId != null
+      ? state.variations.find((variation) => variation.id === targetVariationId)
+      : null;
+
+  const sourceImages =
+    sourceContainer === "main" ? state.images : sourceVariation?.images ?? null;
+  if (!sourceImages) return state;
+
+  const image = sourceImages.find((item) => item.id === imageId);
+  if (!image) return state;
+
+  if (targetContainer !== "main" && !targetVariation) return state;
+
+  if (sourceContainer === "main" && targetVariationId) {
+    return {
+      ...state,
+      images: state.images.filter((item) => item.id !== imageId),
+      variations: state.variations.map((variation) => {
+        if (variation.id !== targetVariationId) return variation;
+        return {
+          ...variation,
+          images: [...variation.images, image],
+        };
+      }),
+    };
+  }
+
+  if (sourceVariationId && targetContainer === "main") {
+    return {
+      ...state,
+      images: [...state.images, image],
+      variations: state.variations.map((variation) => {
+        if (variation.id !== sourceVariationId) return variation;
+        return {
+          ...variation,
+          images: variation.images.filter((item) => item.id !== imageId),
+        };
+      }),
+    };
+  }
+
+  return state;
+}
+
 function SortableVariationRow({
   id,
   children,
@@ -405,7 +480,7 @@ function SortableVariationRow({
   children: React.ReactNode;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id });
+    useSortable({ id, data: { dragType: "variation_row" } });
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -434,6 +509,108 @@ function SortableVariationRow({
         </Button>
       </div>
       {children}
+    </div>
+  );
+}
+
+function DroppableImageContainer({
+  containerId,
+  isEnabled,
+  className,
+  children,
+}: {
+  containerId: ImageContainerId;
+  isEnabled: boolean;
+  className: string;
+  children: React.ReactNode;
+}) {
+  const { isOver, setNodeRef } = useDroppable({
+    id: `drop:${containerId}`,
+    disabled: !isEnabled,
+    data: {
+      dropType: "image_container",
+      targetContainer: containerId,
+    },
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        className,
+        isEnabled && isOver ? "ring-2 ring-primary/50 ring-offset-2 ring-offset-background" : ""
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+function DraggableImageCard({
+  containerId,
+  image,
+  alt,
+  imageClassName,
+  badgeLabel,
+  onRemove,
+  footer,
+}: {
+  containerId: ImageContainerId;
+  image: EditImageItem;
+  alt: string;
+  imageClassName: string;
+  badgeLabel: string;
+  onRemove: () => void;
+  footer?: React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useDraggable({
+      id: `drag:${containerId}:${image.id}`,
+      data: {
+        dragType: "image_item",
+        sourceContainer: containerId,
+        imageId: image.id,
+      },
+    });
+
+  const style = {
+    transform: CSS.Translate.toString(transform),
+    transition,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "group relative overflow-hidden rounded-lg border bg-muted",
+        isDragging ? "opacity-70" : ""
+      )}
+    >
+      <img src={image.previewUrl} alt={alt} className={imageClassName} loading="lazy" />
+      <div className="absolute left-2 top-2 rounded bg-background/80 px-2 py-0.5 text-[10px] uppercase">
+        {badgeLabel}
+      </div>
+      <Button
+        type="button"
+        variant="secondary"
+        size="icon"
+        className="absolute bottom-2 left-2 h-7 w-7 cursor-grab active:cursor-grabbing"
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        type="button"
+        variant="secondary"
+        size="icon"
+        className="absolute right-2 top-2 h-7 w-7"
+        onClick={onRemove}
+      >
+        <X className="h-3.5 w-3.5" />
+      </Button>
+      {footer}
     </div>
   );
 }
@@ -606,6 +783,7 @@ export function AiProductDraftShow() {
   const [isRejecting, setIsRejecting] = React.useState(false);
   const [rejectReason, setRejectReason] = React.useState("");
   const [isSaving, setIsSaving] = React.useState(false);
+  const [activeDragType, setActiveDragType] = React.useState<DragKind>(null);
   const [variationImageUrlInputs, setVariationImageUrlInputs] = React.useState<
     Record<string, string>
   >({});
@@ -659,17 +837,59 @@ export function AiProductDraftShow() {
     []
   );
 
-  const variationSensors = useSensors(
+  const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     })
   );
 
-  const onVariationDragEnd = React.useCallback(
+  const onDragStart = React.useCallback((event: DragStartEvent) => {
+    const dragType = event.active.data.current?.dragType;
+    if (dragType === "variation_row" || dragType === "image_item") {
+      setActiveDragType(dragType);
+      return;
+    }
+    setActiveDragType(null);
+  }, []);
+
+  const onDragCancel = React.useCallback(() => {
+    setActiveDragType(null);
+  }, []);
+
+  const onDragEnd = React.useCallback(
     (event: DragEndEvent) => {
+      setActiveDragType(null);
       const { active, over } = event;
-      if (!over || active.id === over.id) return;
+      const dragType = active.data.current?.dragType;
+      if (!over) return;
+
+      if (dragType === "image_item") {
+        const sourceContainer = active.data.current?.sourceContainer;
+        const imageId = active.data.current?.imageId;
+        const targetContainer = over.data.current?.targetContainer;
+        if (
+          typeof sourceContainer !== "string" ||
+          typeof imageId !== "string" ||
+          typeof targetContainer !== "string"
+        ) {
+          return;
+        }
+        if (sourceContainer === targetContainer) return;
+
+        updateEditState((prev) =>
+          moveImageBetweenContainers(
+            prev,
+            sourceContainer as ImageContainerId,
+            targetContainer as ImageContainerId,
+            imageId
+          )
+        );
+        return;
+      }
+
+      if (dragType !== "variation_row" || active.id === over.id) return;
+
       updateEditState((prev) => {
         const oldIndex = prev.variations.findIndex(
           (variation) => variation.id === String(active.id)
@@ -938,194 +1158,211 @@ export function AiProductDraftShow() {
                       </CardHeader>
                       <CardContent>
                         {editState ? (
-                          <div className="flex flex-col gap-4">
-                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                              <div className="flex flex-col gap-2">
-                                <Label htmlFor="draft-title">Title</Label>
+                          <DndContext
+                            sensors={dndSensors}
+                            collisionDetection={closestCenter}
+                            onDragStart={onDragStart}
+                            onDragCancel={onDragCancel}
+                            onDragEnd={onDragEnd}
+                          >
+                            <div className="flex flex-col gap-4">
+                              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                <div className="flex flex-col gap-2">
+                                  <Label htmlFor="draft-title">Title</Label>
                                   <Input
                                     id="draft-title"
                                     value={editState.title}
                                     onChange={(e) =>
-                                    updateEditState((prev) => ({
-                                      ...prev,
-                                      title: e.target.value,
-                                    }))
-                                  }
-                                  placeholder="Enter product title"
-                                />
-                              </div>
+                                      updateEditState((prev) => ({
+                                        ...prev,
+                                        title: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="Enter product title"
+                                  />
+                                </div>
 
-                              <div className="flex flex-col gap-2">
-                                <Label htmlFor="draft-currency">Currency</Label>
-                                <Select
-                                  value={editState.currency || undefined}
-                                  onValueChange={(value) =>
-                                  updateEditState((prev) => ({
-                                    ...prev,
-                                    currency: value,
-                                  }))
-                                  }
-                                >
-                                  <SelectTrigger id="draft-currency">
-                                    <SelectValue placeholder="Select currency" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {CURRENCY_OPTIONS.map((option) => (
-                                      <SelectItem key={option} value={option}>
-                                        {option}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                              <div className="flex flex-col gap-2">
-                                <Label htmlFor="draft-price">Price</Label>
-                                <Input
-                                  id="draft-price"
-                                  type="number"
-                                  step="0.01"
-                                  inputMode="decimal"
-                                  value={editState.price}
-                                  onChange={(e) =>
-                                  updateEditState((prev) => ({
-                                    ...prev,
-                                    price: e.target.value,
-                                  }))
-                                  }
-                                  placeholder="0.00"
-                                />
-                              </div>
-                            </div>
-
-                            <div className="flex flex-col gap-2">
-                              <Label htmlFor="draft-description">Description</Label>
-                              <Textarea
-                                id="draft-description"
-                                rows={8}
-                                value={editState.description}
-                                onChange={(e) =>
-                                updateEditState((prev) => ({
-                                  ...prev,
-                                  description: e.target.value,
-                                }))
-                                }
-                                placeholder="Describe the product"
-                              />
-                            </div>
-
-                            <div className="flex flex-col gap-3">
-                              <div className="flex items-center justify-between gap-2">
-                                <Label>Variations</Label>
-                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                  {editState.variations.length ? (
-                                    <span>{editState.variations.length} item(s)</span>
-                                  ) : (
-                                    <span>No variations</span>
-                                  )}
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() =>
-                                      updateEditState((prev) => addVariation(prev))
+                                <div className="flex flex-col gap-2">
+                                  <Label htmlFor="draft-currency">Currency</Label>
+                                  <Select
+                                    value={editState.currency || undefined}
+                                    onValueChange={(value) =>
+                                      updateEditState((prev) => ({
+                                        ...prev,
+                                        currency: value,
+                                      }))
                                     }
                                   >
-                                    Add variation
-                                  </Button>
+                                    <SelectTrigger id="draft-currency">
+                                      <SelectValue placeholder="Select currency" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {CURRENCY_OPTIONS.map((option) => (
+                                        <SelectItem key={option} value={option}>
+                                          {option}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
                                 </div>
                               </div>
 
-                              {editState.variations.length === 0 ? (
-                                <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-                                  No variations. This product will be created without variants.
+                              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                <div className="flex flex-col gap-2">
+                                  <Label htmlFor="draft-price">Price</Label>
+                                  <Input
+                                    id="draft-price"
+                                    type="number"
+                                    step="0.01"
+                                    inputMode="decimal"
+                                    value={editState.price}
+                                    onChange={(e) =>
+                                      updateEditState((prev) => ({
+                                        ...prev,
+                                        price: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="0.00"
+                                  />
                                 </div>
-                              ) : (
-                                <div className="flex flex-col gap-3">
-                                  <DndContext
-                                    sensors={variationSensors}
-                                    collisionDetection={closestCenter}
-                                    onDragEnd={onVariationDragEnd}
-                                  >
+                              </div>
+
+                              <div className="flex flex-col gap-2">
+                                <Label htmlFor="draft-description">Description</Label>
+                                <Textarea
+                                  id="draft-description"
+                                  rows={8}
+                                  value={editState.description}
+                                  onChange={(e) =>
+                                    updateEditState((prev) => ({
+                                      ...prev,
+                                      description: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="Describe the product"
+                                />
+                              </div>
+
+                              <div className="flex flex-col gap-3">
+                                <div className="flex items-center justify-between gap-2">
+                                  <Label>Variations</Label>
+                                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                    {editState.variations.length ? (
+                                      <span>{editState.variations.length} item(s)</span>
+                                    ) : (
+                                      <span>No variations</span>
+                                    )}
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() =>
+                                        updateEditState((prev) => addVariation(prev))
+                                      }
+                                    >
+                                      Add variation
+                                    </Button>
+                                  </div>
+                                </div>
+
+                                {editState.variations.length === 0 ? (
+                                  <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                                    No variations. This product will be created without variants.
+                                  </div>
+                                ) : (
+                                  <div className="flex flex-col gap-3">
                                     <SortableContext
                                       items={editState.variations.map((variation) => variation.id)}
                                       strategy={verticalListSortingStrategy}
                                     >
                                       {editState.variations.map((variation) => (
                                         <SortableVariationRow key={variation.id} id={variation.id}>
-                                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
-                                          <div className="sm:col-span-7">
-                                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                                              {variation.images.map((image) => (
-                                                <div
-                                                  key={image.id}
-                                                  className="group relative overflow-hidden rounded-lg border bg-muted"
-                                                >
-                                                  <img
-                                                    src={image.previewUrl}
-                                                    alt="Variation"
-                                                    className="h-24 w-full object-cover"
-                                                    loading="lazy"
-                                                  />
-                                                  <div className="absolute left-1.5 top-1.5 rounded bg-background/80 px-1.5 py-0.5 text-[10px] uppercase">
-                                                    {image.type === "existing" ? "URL" : "Uploaded"}
-                                                  </div>
-                                                  <Button
-                                                    type="button"
-                                                    variant="secondary"
-                                                    size="icon"
-                                                    className="absolute right-1.5 top-1.5 h-6 w-6"
-                                                    onClick={() =>
-                                                      updateEditState((prev) =>
-                                                        removeVariationImage(
-                                                          prev,
-                                                          variation.id,
-                                                          image.id
+                                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
+                                            <div className="sm:col-span-7">
+                                              <DroppableImageContainer
+                                                containerId={toVariationContainerId(variation.id)}
+                                                isEnabled={activeDragType === "image_item"}
+                                                className="rounded-md p-1"
+                                              >
+                                                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                                  {variation.images.map((image) => (
+                                                    <DraggableImageCard
+                                                      key={image.id}
+                                                      containerId={toVariationContainerId(variation.id)}
+                                                      image={image}
+                                                      alt="Variation"
+                                                      imageClassName="h-24 w-full object-cover"
+                                                      badgeLabel={
+                                                        image.type === "existing" ? "URL" : "Uploaded"
+                                                      }
+                                                      onRemove={() =>
+                                                        updateEditState((prev) =>
+                                                          removeVariationImage(
+                                                            prev,
+                                                            variation.id,
+                                                            image.id
+                                                          )
                                                         )
-                                                      )
-                                                    }
-                                                  >
-                                                    <X className="h-3.5 w-3.5" />
-                                                  </Button>
-                                                  {image.type === "existing" ? (
-                                                    <div className="border-t bg-background p-1.5">
-                                                      <Input
-                                                        value={image.url ?? ""}
-                                                        placeholder="https://..."
-                                                        className="h-7 text-xs"
-                                                        onChange={(e) =>
+                                                      }
+                                                      footer={
+                                                        image.type === "existing" ? (
+                                                          <div className="border-t bg-background p-1.5">
+                                                            <Input
+                                                              value={image.url ?? ""}
+                                                              placeholder="https://..."
+                                                              className="h-7 text-xs"
+                                                              onChange={(e) =>
+                                                                updateEditState((prev) =>
+                                                                  updateVariationImageUrl(
+                                                                    prev,
+                                                                    variation.id,
+                                                                    image.id,
+                                                                    e.target.value
+                                                                  )
+                                                                )
+                                                              }
+                                                            />
+                                                          </div>
+                                                        ) : undefined
+                                                      }
+                                                    />
+                                                  ))}
+                                                  <button
+                                                    type="button"
+                                                    className={cn(
+                                                      "flex h-24 flex-col items-center justify-center gap-1 rounded-lg border border-dashed text-[11px] text-muted-foreground transition-colors",
+                                                      "hover:border-primary hover:text-foreground"
+                                                    )}
+                                                    onClick={() => {
+                                                      const input = document.createElement("input");
+                                                      input.type = "file";
+                                                      input.accept = "image/*";
+                                                      input.multiple = true;
+                                                      input.onchange = (event) => {
+                                                        const files = Array.from(
+                                                          (event.target as HTMLInputElement).files ??
+                                                            []
+                                                        );
+                                                        if (files.length) {
                                                           updateEditState((prev) =>
-                                                            updateVariationImageUrl(
+                                                            addVariationImagesFromFile(
                                                               prev,
                                                               variation.id,
-                                                              image.id,
-                                                              e.target.value
+                                                              files
                                                             )
-                                                          )
+                                                          );
                                                         }
-                                                      />
-                                                    </div>
-                                                  ) : null}
-                                                </div>
-                                              ))}
-                                              <button
-                                                type="button"
-                                                className={cn(
-                                                  "flex h-24 flex-col items-center justify-center gap-1 rounded-lg border border-dashed text-[11px] text-muted-foreground transition-colors",
-                                                  "hover:border-primary hover:text-foreground"
-                                                )}
-                                                onClick={() => {
-                                                  const input = document.createElement("input");
-                                                  input.type = "file";
-                                                  input.accept = "image/*";
-                                                  input.multiple = true;
-                                                  input.onchange = (event) => {
-                                                    const files = Array.from(
-                                                      (event.target as HTMLInputElement).files ?? []
-                                                    );
-                                                    if (files.length) {
+                                                      };
+                                                      input.click();
+                                                    }}
+                                                    onDragOver={(event) => {
+                                                      event.preventDefault();
+                                                    }}
+                                                    onDrop={(event) => {
+                                                      event.preventDefault();
+                                                      const files = Array.from(
+                                                        event.dataTransfer.files
+                                                      );
                                                       updateEditState((prev) =>
                                                         addVariationImagesFromFile(
                                                           prev,
@@ -1133,185 +1370,169 @@ export function AiProductDraftShow() {
                                                           files
                                                         )
                                                       );
-                                                    }
-                                                  };
-                                                  input.click();
-                                                }}
-                                                onDragOver={(event) => {
-                                                  event.preventDefault();
-                                                }}
-                                                onDrop={(event) => {
-                                                  event.preventDefault();
-                                                  const files = Array.from(event.dataTransfer.files);
+                                                    }}
+                                                  >
+                                                    <ImagePlus className="h-4 w-4" />
+                                                    Add image(s)
+                                                  </button>
+                                                </div>
+                                              </DroppableImageContainer>
+                                            </div>
+
+                                            <div className="sm:col-span-3 flex flex-col gap-1">
+                                              <Label className="text-xs">Title</Label>
+                                              <Input
+                                                value={variation.title}
+                                                placeholder="Variation title"
+                                                onChange={(e) =>
                                                   updateEditState((prev) =>
-                                                    addVariationImagesFromFile(
+                                                    updateVariationField(
                                                       prev,
                                                       variation.id,
-                                                      files
+                                                      (item) => ({
+                                                        ...item,
+                                                        title: e.target.value,
+                                                      })
                                                     )
-                                                  );
-                                                }}
-                                              >
-                                                <ImagePlus className="h-4 w-4" />
-                                                Add image(s)
-                                              </button>
+                                                  )
+                                                }
+                                              />
+                                            </div>
+
+                                            <div className="sm:col-span-2 flex flex-col gap-1">
+                                              <Label className="text-xs">Position</Label>
+                                              <Input
+                                                value={variation.position}
+                                                type="number"
+                                                inputMode="numeric"
+                                                readOnly
+                                              />
+                                              <div className="text-[10px] text-muted-foreground">
+                                                Drag to reorder (0-based)
+                                              </div>
                                             </div>
                                           </div>
 
-                                          <div className="sm:col-span-3 flex flex-col gap-1">
-                                            <Label className="text-xs">Title</Label>
+                                          <div className="flex flex-wrap items-center gap-2">
                                             <Input
-                                              value={variation.title}
-                                              placeholder="Variation title"
+                                              placeholder="Add image URL"
+                                              value={variationImageUrlInputs[variation.id] ?? ""}
                                               onChange={(e) =>
+                                                setVariationImageUrlInputs((prev) => ({
+                                                  ...prev,
+                                                  [variation.id]: e.target.value,
+                                                }))
+                                              }
+                                              className="h-8 max-w-sm"
+                                            />
+                                            <Button
+                                              type="button"
+                                              variant="outline"
+                                              size="sm"
+                                              className="whitespace-nowrap"
+                                              onClick={() => {
+                                                const nextUrl =
+                                                  variationImageUrlInputs[variation.id] ?? "";
+                                                if (!nextUrl.trim().length) return;
                                                 updateEditState((prev) =>
-                                                  updateVariationField(prev, variation.id, (item) => ({
-                                                    ...item,
-                                                    title: e.target.value,
-                                                  }))
+                                                  addVariationImageFromUrl(
+                                                    prev,
+                                                    variation.id,
+                                                    nextUrl
+                                                  )
+                                                );
+                                                setVariationImageUrlInputs((prev) => ({
+                                                  ...prev,
+                                                  [variation.id]: "",
+                                                }));
+                                              }}
+                                            >
+                                              Add URL
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              variant="destructive"
+                                              size="sm"
+                                              onClick={() =>
+                                                updateEditState((prev) =>
+                                                  removeVariation(prev, variation)
                                                 )
                                               }
-                                            />
+                                            >
+                                              Remove variation
+                                            </Button>
                                           </div>
-
-                                          <div className="sm:col-span-2 flex flex-col gap-1">
-                                            <Label className="text-xs">Position</Label>
-                                            <Input
-                                              value={variation.position}
-                                              type="number"
-                                              inputMode="numeric"
-                                              readOnly
-                                            />
-                                            <div className="text-[10px] text-muted-foreground">
-                                              Drag to reorder (0-based)
-                                            </div>
-                                          </div>
-                                        </div>
-
-                                        <div className="flex flex-wrap items-center gap-2">
-                                          <Input
-                                            placeholder="Add image URL"
-                                            value={variationImageUrlInputs[variation.id] ?? ""}
-                                            onChange={(e) =>
-                                              setVariationImageUrlInputs((prev) => ({
-                                                ...prev,
-                                                [variation.id]: e.target.value,
-                                              }))
-                                            }
-                                            className="h-8 max-w-sm"
-                                          />
-                                          <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="sm"
-                                            className="whitespace-nowrap"
-                                            onClick={() => {
-                                              const nextUrl =
-                                                variationImageUrlInputs[variation.id] ?? "";
-                                              if (!nextUrl.trim().length) return;
-                                              updateEditState((prev) =>
-                                                addVariationImageFromUrl(
-                                                  prev,
-                                                  variation.id,
-                                                  nextUrl
-                                                )
-                                              );
-                                              setVariationImageUrlInputs((prev) => ({
-                                                ...prev,
-                                                [variation.id]: "",
-                                              }));
-                                            }}
-                                          >
-                                            Add URL
-                                          </Button>
-                                          <Button
-                                            type="button"
-                                            variant="destructive"
-                                            size="sm"
-                                            onClick={() =>
-                                              updateEditState((prev) => removeVariation(prev, variation))
-                                            }
-                                          >
-                                            Remove variation
-                                          </Button>
-                                        </div>
                                         </SortableVariationRow>
                                       ))}
                                     </SortableContext>
-                                  </DndContext>
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="flex flex-col gap-2">
-                              <div className="flex items-center justify-between gap-2">
-                                <Label>Images</Label>
-                                <div className="text-xs text-muted-foreground">
-                                  {editState.images.length} image(s)
-                                </div>
-                              </div>
-                              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                                {editState.images.map((image) => (
-                                  <div
-                                    key={image.id}
-                                    className="group relative overflow-hidden rounded-lg border bg-muted"
-                                  >
-                                    <img
-                                      src={image.previewUrl}
-                                      alt="Draft"
-                                      className="h-32 w-full object-cover"
-                                      loading="lazy"
-                                    />
-                                    <div className="absolute left-2 top-2 rounded bg-background/80 px-2 py-0.5 text-[10px] uppercase">
-                                      {image.type === "existing" ? "Original" : "New"}
-                                    </div>
-                                    <Button
-                                      type="button"
-                                      variant="secondary"
-                                      size="icon"
-                                      className="absolute right-2 top-2 h-7 w-7"
-                                      onClick={() =>
-                                      updateEditState((prev) => removeImage(prev, image))
-                                      }
-                                    >
-                                      <X className="h-3.5 w-3.5" />
-                                    </Button>
                                   </div>
-                                ))}
-                                <button
-                                  type="button"
-                                  className={cn(
-                                    "flex h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-xs text-muted-foreground transition-colors",
-                                    "hover:border-primary hover:text-foreground"
-                                  )}
-                                  onClick={() => fileInputRef.current?.click()}
-                                  onDragOver={(event) => {
-                                    event.preventDefault();
-                                  }}
-                                  onDrop={(event) => {
-                                    event.preventDefault();
-                                    const files = Array.from(event.dataTransfer.files);
-                                  updateEditState((prev) => addImages(prev, files));
-                                  }}
-                                >
-                                  <ImagePlus className="h-5 w-5" />
-                                  Drag & drop or click
-                                </button>
+                                )}
                               </div>
-                              <input
-                                ref={fileInputRef}
-                                type="file"
-                                accept="image/*"
-                                multiple
-                                className="hidden"
-                                onChange={(event) => {
-                                  const files = Array.from(event.target.files ?? []);
-                                  event.target.value = "";
-                                  updateEditState((prev) => addImages(prev, files));
-                                }}
-                              />
+
+                              <div className="flex flex-col gap-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <Label>Images</Label>
+                                  <div className="text-xs text-muted-foreground">
+                                    {editState.images.length} image(s)
+                                  </div>
+                                </div>
+                                <DroppableImageContainer
+                                  containerId="main"
+                                  isEnabled={activeDragType === "image_item"}
+                                  className="rounded-md p-1"
+                                >
+                                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                                    {editState.images.map((image) => (
+                                      <DraggableImageCard
+                                        key={image.id}
+                                        containerId="main"
+                                        image={image}
+                                        alt="Draft"
+                                        imageClassName="h-32 w-full object-cover"
+                                        badgeLabel={
+                                          image.type === "existing" ? "Original" : "New"
+                                        }
+                                        onRemove={() =>
+                                          updateEditState((prev) => removeImage(prev, image))
+                                        }
+                                      />
+                                    ))}
+                                    <button
+                                      type="button"
+                                      className={cn(
+                                        "flex h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-xs text-muted-foreground transition-colors",
+                                        "hover:border-primary hover:text-foreground"
+                                      )}
+                                      onClick={() => fileInputRef.current?.click()}
+                                      onDragOver={(event) => {
+                                        event.preventDefault();
+                                      }}
+                                      onDrop={(event) => {
+                                        event.preventDefault();
+                                        const files = Array.from(event.dataTransfer.files);
+                                        updateEditState((prev) => addImages(prev, files));
+                                      }}
+                                    >
+                                      <ImagePlus className="h-5 w-5" />
+                                      Drag & drop or click
+                                    </button>
+                                  </div>
+                                </DroppableImageContainer>
+                                <input
+                                  ref={fileInputRef}
+                                  type="file"
+                                  accept="image/*"
+                                  multiple
+                                  className="hidden"
+                                  onChange={(event) => {
+                                    const files = Array.from(event.target.files ?? []);
+                                    event.target.value = "";
+                                    updateEditState((prev) => addImages(prev, files));
+                                  }}
+                                />
+                              </div>
                             </div>
-                          </div>
+                          </DndContext>
                         ) : (
                           <div className="text-sm text-muted-foreground">
                             Draft payload is not available yet.
