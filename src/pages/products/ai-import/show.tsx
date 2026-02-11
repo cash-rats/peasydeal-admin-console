@@ -50,19 +50,16 @@ type EditImageItem = {
 };
 
 type VariationSnapshotItem = {
-  imageUrl: string;
+  imageUrls: string[];
   position: string;
   title: string;
 };
 
 type EditVariationItem = {
   id: string;
-  type: "existing" | "new";
-  imageUrl: string;
   title: string;
   position: string;
-  file?: File;
-  previewUrl: string;
+  images: EditImageItem[];
 };
 
 type EditState = EditSnapshot & {
@@ -98,10 +95,10 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
     url: typeof payload.url === "string" ? payload.url : "",
     variationSnapshots: Array.isArray(payload.variations)
       ? payload.variations.map((item) => ({
-          imageUrl:
-            item && typeof item.image === "string"
-              ? item.image
-              : "",
+          imageUrls:
+            item && Array.isArray(item.images)
+              ? item.images.filter((image): image is string => typeof image === "string")
+              : [],
           position:
             item && (typeof item.position === "number" || typeof item.position === "string")
               ? String(item.position)
@@ -129,11 +126,14 @@ function createEditState(snapshot: EditSnapshot): EditState {
 
   const variations = snapshot.variationSnapshots.map((variation) => ({
     id: newId(),
-    type: "existing" as const,
-    imageUrl: variation.imageUrl,
     title: variation.title,
     position: variation.position,
-    previewUrl: variation.imageUrl,
+    images: variation.imageUrls.map((url) => ({
+      id: newId(),
+      type: "existing" as const,
+      url,
+      previewUrl: url,
+    })),
   }));
 
   return {
@@ -169,8 +169,11 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
     const current = state.variations[i];
     const original = snapshot.variationSnapshots[i];
     if (!original) return true;
-    if (current.type === "new") return true;
-    if (current.imageUrl !== original.imageUrl) return true;
+    if (current.images.some((image) => image.type === "new")) return true;
+    const currentImageUrls = current.images
+      .filter((image) => image.type === "existing" && image.url)
+      .map((image) => image.url as string);
+    if (!isSameStringArray(currentImageUrls, original.imageUrls)) return true;
     if (current.title !== original.title) return true;
     if (current.position !== original.position) return true;
   }
@@ -190,9 +193,11 @@ function revokeNewImagePreviews(state: EditState | null) {
 function revokeNewVariationPreviews(state: EditState | null) {
   if (!state) return;
   state.variations.forEach((variation) => {
-    if (variation.type === "new") {
-      URL.revokeObjectURL(variation.previewUrl);
-    }
+    variation.images.forEach((image) => {
+      if (image.type === "new") {
+        URL.revokeObjectURL(image.previewUrl);
+      }
+    });
   });
 }
 
@@ -234,11 +239,9 @@ function addVariation(state: EditState): EditState {
 
   const item: EditVariationItem = {
     id: newId(),
-    type: "new",
-    imageUrl: "",
     title: "",
     position: nextPosition,
-    previewUrl: "",
+    images: [],
   };
 
   return {
@@ -248,9 +251,11 @@ function addVariation(state: EditState): EditState {
 }
 
 function removeVariation(state: EditState, variation: EditVariationItem): EditState {
-  if (variation.type === "new" && variation.previewUrl) {
-    URL.revokeObjectURL(variation.previewUrl);
-  }
+  variation.images.forEach((image) => {
+    if (image.type === "new") {
+      URL.revokeObjectURL(image.previewUrl);
+    }
+  });
 
   return {
     ...state,
@@ -258,28 +263,102 @@ function removeVariation(state: EditState, variation: EditVariationItem): EditSt
   };
 }
 
-function setVariationImageFromFile(
+function addVariationImagesFromFile(
   state: EditState,
   variationId: string,
-  file: File
+  files: File[]
 ): EditState {
-  if (!file.type.startsWith("image/")) return state;
-
-  const previewUrl = URL.createObjectURL(file);
+  const nextImages = files
+    .filter((file) => file.type.startsWith("image/"))
+    .map((file) => ({
+      id: newId(),
+      type: "new" as const,
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }));
+  if (!nextImages.length) return state;
 
   return {
     ...state,
     variations: state.variations.map((item) => {
       if (item.id !== variationId) return item;
-      if (item.type === "new" && item.previewUrl) {
-        URL.revokeObjectURL(item.previewUrl);
+      return {
+        ...item,
+        images: [...item.images, ...nextImages],
+      };
+    }),
+  };
+}
+
+function addVariationImageFromUrl(
+  state: EditState,
+  variationId: string,
+  imageUrl: string
+): EditState {
+  const trimmed = imageUrl.trim();
+  if (!trimmed.length) return state;
+
+  return {
+    ...state,
+    variations: state.variations.map((item) => {
+      if (item.id !== variationId) return item;
+      return {
+        ...item,
+        images: [
+          ...item.images,
+          {
+            id: newId(),
+            type: "existing",
+            url: trimmed,
+            previewUrl: trimmed,
+          },
+        ],
+      };
+    }),
+  };
+}
+
+function removeVariationImage(
+  state: EditState,
+  variationId: string,
+  imageId: string
+): EditState {
+  return {
+    ...state,
+    variations: state.variations.map((item) => {
+      if (item.id !== variationId) return item;
+      const target = item.images.find((image) => image.id === imageId);
+      if (target?.type === "new") {
+        URL.revokeObjectURL(target.previewUrl);
       }
       return {
         ...item,
-        type: "new",
-        file,
-        imageUrl: "",
-        previewUrl,
+        images: item.images.filter((image) => image.id !== imageId),
+      };
+    }),
+  };
+}
+
+function updateVariationImageUrl(
+  state: EditState,
+  variationId: string,
+  imageId: string,
+  imageUrl: string
+): EditState {
+  return {
+    ...state,
+    variations: state.variations.map((item) => {
+      if (item.id !== variationId) return item;
+      return {
+        ...item,
+        images: item.images.map((image) => {
+          if (image.id !== imageId || image.type !== "existing") return image;
+          return {
+            ...image,
+            url: imageUrl,
+            previewUrl: imageUrl,
+          };
+        }),
       };
     }),
   };
@@ -332,18 +411,22 @@ async function toPayload(
 
   const variations = await Promise.all(
     state.variations.map(async (variation) => {
-      let image: string | null = null;
-      if (variation.type === "new" && variation.file) {
-        image = await fileToDataUrl(variation.file);
-      } else if (variation.imageUrl.trim().length) {
-        image = variation.imageUrl.trim();
-      }
+      const existingVariationImages = variation.images
+        .filter((image) => image.type === "existing" && image.url)
+        .map((image) => image.url as string)
+        .map((image) => image.trim())
+        .filter((image) => image.length > 0);
+      const newVariationImages = await Promise.all(
+        variation.images
+          .filter((image) => image.type === "new" && image.file)
+          .map((image) => fileToDataUrl(image.file as File))
+      );
 
       const positionValue = variation.position.trim();
       const positionNumber = positionValue.length ? Number(positionValue) : null;
 
       return {
-        image,
+        images: [...existingVariationImages, ...newVariationImages],
         position: Number.isFinite(positionNumber) ? positionNumber : null,
         title: toNullableString(variation.title),
       };
@@ -462,6 +545,9 @@ export function AiProductDraftShow() {
   const [isRejecting, setIsRejecting] = React.useState(false);
   const [rejectReason, setRejectReason] = React.useState("");
   const [isSaving, setIsSaving] = React.useState(false);
+  const [variationImageUrlInputs, setVariationImageUrlInputs] = React.useState<
+    Record<string, string>
+  >({});
 
   const [editState, setEditState] = React.useState<EditState | null>(null);
   const editSnapshotRef = React.useRef<EditSnapshot | null>(null);
@@ -519,6 +605,7 @@ export function AiProductDraftShow() {
         revokeNewVariationPreviews(prev);
         return null;
       });
+      setVariationImageUrlInputs({});
       editSnapshotRef.current = null;
       return;
     }
@@ -530,6 +617,7 @@ export function AiProductDraftShow() {
       revokeNewVariationPreviews(prev);
       return createEditState(snapshot);
     });
+    setVariationImageUrlInputs({});
   }, [draftPayload]);
 
   React.useEffect(() => {
@@ -872,134 +960,190 @@ export function AiProductDraftShow() {
                                     .map((variation) => (
                                       <div
                                         key={variation.id}
-                                        className="grid grid-cols-1 gap-3 rounded-lg border p-3 sm:grid-cols-12 sm:items-center"
+                                        className="flex flex-col gap-3 rounded-lg border p-3"
                                       >
-                                        <div className="sm:col-span-2">
-                                          <div className="flex items-center gap-2">
-                                            <div
-                                              className="relative h-16 w-16 overflow-hidden rounded-md border bg-muted"
-                                              onDragOver={(event) => {
-                                                event.preventDefault();
-                                              }}
-                                              onDrop={(event) => {
-                                                event.preventDefault();
-                                                const files = Array.from(event.dataTransfer.files);
-                                                const file = files.find((f) => f.type.startsWith("image/"));
-                                                if (file) {
-                                                  updateEditState((prev) =>
-                                                    setVariationImageFromFile(prev, variation.id, file)
-                                                  );
-                                                }
-                                              }}
-                                            >
-                                              {variation.previewUrl ? (
-                                                <img
-                                                  src={variation.previewUrl}
-                                                  alt="Variation"
-                                                  className="h-full w-full object-cover"
-                                                  loading="lazy"
-                                                />
-                                              ) : (
-                                                <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
-                                                  No image
+                                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
+                                          <div className="sm:col-span-7">
+                                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                              {variation.images.map((image) => (
+                                                <div
+                                                  key={image.id}
+                                                  className="group relative overflow-hidden rounded-lg border bg-muted"
+                                                >
+                                                  <img
+                                                    src={image.previewUrl}
+                                                    alt="Variation"
+                                                    className="h-24 w-full object-cover"
+                                                    loading="lazy"
+                                                  />
+                                                  <div className="absolute left-1.5 top-1.5 rounded bg-background/80 px-1.5 py-0.5 text-[10px] uppercase">
+                                                    {image.type === "existing" ? "URL" : "Uploaded"}
+                                                  </div>
+                                                  <Button
+                                                    type="button"
+                                                    variant="secondary"
+                                                    size="icon"
+                                                    className="absolute right-1.5 top-1.5 h-6 w-6"
+                                                    onClick={() =>
+                                                      updateEditState((prev) =>
+                                                        removeVariationImage(
+                                                          prev,
+                                                          variation.id,
+                                                          image.id
+                                                        )
+                                                      )
+                                                    }
+                                                  >
+                                                    <X className="h-3.5 w-3.5" />
+                                                  </Button>
+                                                  {image.type === "existing" ? (
+                                                    <div className="border-t bg-background p-1.5">
+                                                      <Input
+                                                        value={image.url ?? ""}
+                                                        placeholder="https://..."
+                                                        className="h-7 text-xs"
+                                                        onChange={(e) =>
+                                                          updateEditState((prev) =>
+                                                            updateVariationImageUrl(
+                                                              prev,
+                                                              variation.id,
+                                                              image.id,
+                                                              e.target.value
+                                                            )
+                                                          )
+                                                        }
+                                                      />
+                                                    </div>
+                                                  ) : null}
                                                 </div>
-                                              )}
+                                              ))}
+                                              <button
+                                                type="button"
+                                                className={cn(
+                                                  "flex h-24 flex-col items-center justify-center gap-1 rounded-lg border border-dashed text-[11px] text-muted-foreground transition-colors",
+                                                  "hover:border-primary hover:text-foreground"
+                                                )}
+                                                onClick={() => {
+                                                  const input = document.createElement("input");
+                                                  input.type = "file";
+                                                  input.accept = "image/*";
+                                                  input.multiple = true;
+                                                  input.onchange = (event) => {
+                                                    const files = Array.from(
+                                                      (event.target as HTMLInputElement).files ?? []
+                                                    );
+                                                    if (files.length) {
+                                                      updateEditState((prev) =>
+                                                        addVariationImagesFromFile(
+                                                          prev,
+                                                          variation.id,
+                                                          files
+                                                        )
+                                                      );
+                                                    }
+                                                  };
+                                                  input.click();
+                                                }}
+                                                onDragOver={(event) => {
+                                                  event.preventDefault();
+                                                }}
+                                                onDrop={(event) => {
+                                                  event.preventDefault();
+                                                  const files = Array.from(event.dataTransfer.files);
+                                                  updateEditState((prev) =>
+                                                    addVariationImagesFromFile(
+                                                      prev,
+                                                      variation.id,
+                                                      files
+                                                    )
+                                                  );
+                                                }}
+                                              >
+                                                <ImagePlus className="h-4 w-4" />
+                                                Add image(s)
+                                              </button>
                                             </div>
                                           </div>
-                                          <div className="pt-1 text-[10px] uppercase text-muted-foreground">
-                                            Drop image or use upload/URL
+
+                                          <div className="sm:col-span-3 flex flex-col gap-1">
+                                            <Label className="text-xs">Title</Label>
+                                            <Input
+                                              value={variation.title}
+                                              placeholder="Variation title"
+                                              onChange={(e) =>
+                                                updateEditState((prev) =>
+                                                  updateVariationField(prev, variation.id, (item) => ({
+                                                    ...item,
+                                                    title: e.target.value,
+                                                  }))
+                                                )
+                                              }
+                                            />
+                                          </div>
+
+                                          <div className="sm:col-span-2 flex flex-col gap-1">
+                                            <Label className="text-xs">Position</Label>
+                                            <Input
+                                              value={variation.position}
+                                              type="number"
+                                              inputMode="numeric"
+                                              onChange={(e) =>
+                                                updateEditState((prev) =>
+                                                  updateVariationField(prev, variation.id, (item) => ({
+                                                    ...item,
+                                                    position: e.target.value,
+                                                  }))
+                                                )
+                                              }
+                                            />
                                           </div>
                                         </div>
 
-                                        <div className="sm:col-span-4 flex flex-col gap-1">
-                                          <Label className="text-xs">Image URL</Label>
+                                        <div className="flex flex-wrap items-center gap-2">
                                           <Input
-                                            value={variation.imageUrl}
-                                            placeholder="https://..."
+                                            placeholder="Add image URL"
+                                            value={variationImageUrlInputs[variation.id] ?? ""}
                                             onChange={(e) =>
-                                              updateEditState((prev) =>
-                                                updateVariationField(prev, variation.id, (item) => ({
-                                                  ...item,
-                                                  imageUrl: e.target.value,
-                                                  type: item.type === "existing" && e.target.value !== item.imageUrl
-                                                    ? "new"
-                                                    : item.type,
-                                                  file: undefined,
-                                                  previewUrl: e.target.value,
-                                                }))
-                                              )
+                                              setVariationImageUrlInputs((prev) => ({
+                                                ...prev,
+                                                [variation.id]: e.target.value,
+                                              }))
                                             }
+                                            className="h-8 max-w-sm"
                                           />
-                                        </div>
-
-                                        <div className="sm:col-span-2 flex flex-col gap-1">
-                                          <Label className="text-xs">Title</Label>
-                                          <Input
-                                            value={variation.title}
-                                            placeholder="Variation title"
-                                            onChange={(e) =>
-                                              updateEditState((prev) =>
-                                                updateVariationField(prev, variation.id, (item) => ({
-                                                  ...item,
-                                                  title: e.target.value,
-                                                }))
-                                              )
-                                            }
-                                          />
-                                        </div>
-
-                                        <div className="sm:col-span-2 flex flex-col gap-1">
-                                          <Label className="text-xs">Position</Label>
-                                          <Input
-                                            value={variation.position}
-                                            type="number"
-                                            inputMode="numeric"
-                                            onChange={(e) =>
-                                              updateEditState((prev) =>
-                                                updateVariationField(prev, variation.id, (item) => ({
-                                                  ...item,
-                                                  position: e.target.value,
-                                                }))
-                                              )
-                                            }
-                                          />
-                                        </div>
-
-                                        <div className="sm:col-span-12 flex flex-wrap items-center gap-2 pt-1">
                                           <Button
                                             type="button"
-                                            variant="default"
+                                            variant="outline"
                                             size="sm"
                                             className="whitespace-nowrap"
                                             onClick={() => {
-                                              const input = document.createElement("input");
-                                              input.type = "file";
-                                              input.accept = "image/*";
-                                              input.onchange = (event) => {
-                                                const files = Array.from(
-                                                  (event.target as HTMLInputElement).files ?? []
-                                                );
-                                                const file = files[0];
-                                                if (file) {
-                                                  updateEditState((prev) =>
-                                                    setVariationImageFromFile(prev, variation.id, file)
-                                                  );
-                                                }
-                                              };
-                                              input.click();
+                                              const nextUrl =
+                                                variationImageUrlInputs[variation.id] ?? "";
+                                              if (!nextUrl.trim().length) return;
+                                              updateEditState((prev) =>
+                                                addVariationImageFromUrl(
+                                                  prev,
+                                                  variation.id,
+                                                  nextUrl
+                                                )
+                                              );
+                                              setVariationImageUrlInputs((prev) => ({
+                                                ...prev,
+                                                [variation.id]: "",
+                                              }));
                                             }}
                                           >
-                                            Upload image
+                                            Add URL
                                           </Button>
                                           <Button
                                             type="button"
                                             variant="destructive"
-                                            size="icon"
+                                            size="sm"
                                             onClick={() =>
                                               updateEditState((prev) => removeVariation(prev, variation))
                                             }
                                           >
-                                            <X className="h-4 w-4" />
+                                            Remove variation
                                           </Button>
                                         </div>
                                       </div>

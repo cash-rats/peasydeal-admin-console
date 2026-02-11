@@ -17,7 +17,7 @@ export type ProductDraftPayload = {
   description?: string | null;
   images?: string[] | null;
   variations?: {
-    image?: string | null;
+    images?: string[] | null;
     position?: number | string | null;
     title?: string | null;
   }[] | null;
