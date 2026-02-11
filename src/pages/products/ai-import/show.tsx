@@ -1,6 +1,7 @@
 import { useNotification } from "@refinedev/core";
 import {
   closestCenter,
+  pointerWithin,
   DndContext,
   KeyboardSensor,
   PointerSensor,
@@ -526,7 +527,6 @@ function DroppableImageContainer({
 }) {
   const { isOver, setNodeRef } = useDroppable({
     id: `drop:${containerId}`,
-    disabled: !isEnabled,
     data: {
       dropType: "image_container",
       targetContainer: containerId,
@@ -588,23 +588,19 @@ function DraggableImageCard({
         isDragging ? "opacity-70" : ""
       )}
     >
-      <img src={image.previewUrl} alt={alt} className={imageClassName} loading="lazy" />
+      <img
+        src={image.previewUrl}
+        alt={alt}
+        className={cn(imageClassName, "cursor-grab active:cursor-grabbing")}
+        loading="lazy"
+        draggable={false}
+        onDragStart={(event) => event.preventDefault()}
+        {...attributes}
+        {...listeners}
+      />
       <div className="absolute left-2 top-2 rounded bg-background/80 px-2 py-0.5 text-[10px] uppercase">
         {badgeLabel}
       </div>
-      <Button
-        type="button"
-        variant="secondary"
-        size="icon"
-        className={cn(
-          "absolute bottom-2 left-2 h-7 w-7 cursor-grab active:cursor-grabbing",
-          "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-        )}
-        {...attributes}
-        {...listeners}
-      >
-        <GripVertical className="h-3.5 w-3.5" />
-      </Button>
       <Button
         type="button"
         variant="secondary"
@@ -1243,7 +1239,38 @@ export function AiProductDraftShow() {
                   {editState ? (
                     <DndContext
                       sensors={dndSensors}
-                      collisionDetection={closestCenter}
+                      collisionDetection={(args) => {
+                        const dragType = args.active.data.current?.dragType;
+
+                        if (dragType === "image_item") {
+                          const imageContainers = args.droppableContainers.filter(
+                            (container) =>
+                              container.data.current?.dropType === "image_container"
+                          );
+                          const byPointer = pointerWithin({
+                            ...args,
+                            droppableContainers: imageContainers,
+                          });
+                          if (byPointer.length) return byPointer;
+                          return closestCenter({
+                            ...args,
+                            droppableContainers: imageContainers,
+                          });
+                        }
+
+                        if (dragType === "variation_row") {
+                          const sortableContainers = args.droppableContainers.filter(
+                            (container) =>
+                              container.data.current?.dropType !== "image_container"
+                          );
+                          return closestCenter({
+                            ...args,
+                            droppableContainers: sortableContainers,
+                          });
+                        }
+
+                        return closestCenter(args);
+                      }}
                       onDragStart={onDragStart}
                       onDragCancel={onDragCancel}
                       onDragEnd={onDragEnd}
