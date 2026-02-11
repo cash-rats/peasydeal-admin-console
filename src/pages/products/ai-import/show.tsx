@@ -123,6 +123,44 @@ function toNumberOrNull(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function uniqueStringArray(values: string[]): string[] {
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed.length || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    next.push(trimmed);
+  }
+  return next;
+}
+
+function fileSignature(file: File): string {
+  return `${file.name}|${file.size}|${file.lastModified}|${file.type}`;
+}
+
+function imageDedupKey(image: Pick<EditImageItem, "type" | "url" | "file">): string | null {
+  if (image.type === "existing" && typeof image.url === "string") {
+    const trimmed = image.url.trim();
+    return trimmed.length ? `url:${trimmed}` : null;
+  }
+
+  if (image.type === "new" && image.file) {
+    return `file:${fileSignature(image.file)}`;
+  }
+
+  return null;
+}
+
+function hasDuplicateImage(
+  images: EditImageItem[],
+  target: Pick<EditImageItem, "type" | "url" | "file">
+): boolean {
+  const targetKey = imageDedupKey(target);
+  if (!targetKey) return false;
+  return images.some((image) => imageDedupKey(image) === targetKey);
+}
+
 function sameMainImageRef(
   a: SnapshotMainImageRef,
   b: SnapshotMainImageRef
@@ -196,7 +234,9 @@ function resolveSnapshotMainImageRef(
 
 function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
   const imageUrls = Array.isArray(payload.images)
-    ? payload.images.filter((item): item is string => typeof item === "string")
+    ? uniqueStringArray(
+        payload.images.filter((item): item is string => typeof item === "string")
+      )
     : [];
 
   const variationSnapshots = Array.isArray(payload.variations)
@@ -350,8 +390,20 @@ function revokeNewVariationPreviews(state: EditState | null) {
 }
 
 function addImages(state: EditState, files: File[]): EditState {
+  const existingKeys = new Set(
+    state.images
+      .map((image) => imageDedupKey(image))
+      .filter((key): key is string => typeof key === "string")
+  );
+  const batchKeys = new Set<string>();
   const nextImages = files
     .filter((file) => file.type.startsWith("image/"))
+    .filter((file) => {
+      const key = `file:${fileSignature(file)}`;
+      if (existingKeys.has(key) || batchKeys.has(key)) return false;
+      batchKeys.add(key);
+      return true;
+    })
     .map((file) => ({
       id: newId(),
       type: "new" as const,
@@ -756,9 +808,10 @@ function moveImageBetweenContainers(
   }
 
   if (sourceVariationId && targetContainer === "main") {
+    const shouldAppend = !hasDuplicateImage(state.images, image);
     return {
       ...state,
-      images: [...state.images, image],
+      images: shouldAppend ? [...state.images, image] : state.images,
       variations: state.variations.map((variation) => {
         if (variation.id !== sourceVariationId) return variation;
         return {
