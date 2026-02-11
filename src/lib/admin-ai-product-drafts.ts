@@ -16,6 +16,11 @@ export type ProductDraftPayload = {
   currency?: string | null;
   description?: string | null;
   images?: string[] | null;
+  main_image_ref?: {
+    container?: "main" | "variation" | null;
+    variation_position?: number | null;
+    url?: string | null;
+  } | null;
   variations?: {
     images?: string[] | null;
     position?: number | string | null;

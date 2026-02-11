@@ -59,6 +59,7 @@ type EditSnapshot = {
   currency: string;
   price: string;
   imageUrls: string[];
+  mainImageRef: SnapshotMainImageRef;
   url: string;
   variationSnapshots: VariationSnapshotItem[];
 };
@@ -85,10 +86,20 @@ type EditVariationItem = {
 };
 
 type ImageContainerId = "main" | `variation:${string}`;
+type SnapshotMainImageRef = {
+  container: "main" | "variation";
+  variationPosition: number | null;
+  url: string;
+} | null;
+type MainImageSelection = {
+  containerId: ImageContainerId;
+  imageId: string;
+} | null;
 type DragKind = "variation_row" | "image_item" | null;
 
 type EditState = EditSnapshot & {
   images: EditImageItem[];
+  mainImageSelection: MainImageSelection;
   variations: EditVariationItem[];
   isDirty: boolean;
 };
@@ -105,7 +116,110 @@ const CURRENCY_OPTIONS = [
   "GBP",
 ];
 
+function toNumberOrNull(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed.length) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sameMainImageRef(
+  a: SnapshotMainImageRef,
+  b: SnapshotMainImageRef
+): boolean {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return (
+    a.container === b.container &&
+    a.variationPosition === b.variationPosition &&
+    a.url === b.url
+  );
+}
+
+function getFallbackMainImageRef(
+  imageUrls: string[],
+  variationSnapshots: VariationSnapshotItem[]
+): SnapshotMainImageRef {
+  const firstMain = imageUrls.find((item) => item.trim().length > 0);
+  if (firstMain) {
+    return { container: "main", variationPosition: null, url: firstMain };
+  }
+
+  for (const variation of variationSnapshots) {
+    const firstVariationImage = variation.imageUrls.find((item) => item.trim().length > 0);
+    if (!firstVariationImage) continue;
+    return {
+      container: "variation",
+      variationPosition: toNumberOrNull(variation.position),
+      url: firstVariationImage,
+    };
+  }
+
+  return null;
+}
+
+function resolveSnapshotMainImageRef(
+  imageUrls: string[],
+  variationSnapshots: VariationSnapshotItem[],
+  raw: ProductDraftPayload["main_image_ref"]
+): SnapshotMainImageRef {
+  const container = raw?.container;
+  const url = typeof raw?.url === "string" ? raw.url.trim() : "";
+  const variationPosition =
+    typeof raw?.variation_position === "number" && Number.isFinite(raw.variation_position)
+      ? raw.variation_position
+      : null;
+
+  if (container === "main" && url.length > 0 && imageUrls.includes(url)) {
+    return {
+      container: "main",
+      variationPosition: null,
+      url,
+    };
+  }
+
+  if (container === "variation" && url.length > 0 && variationPosition != null) {
+    const variation = variationSnapshots.find(
+      (item) => toNumberOrNull(item.position) === variationPosition
+    );
+    if (variation && variation.imageUrls.includes(url)) {
+      return {
+        container: "variation",
+        variationPosition,
+        url,
+      };
+    }
+  }
+
+  return getFallbackMainImageRef(imageUrls, variationSnapshots);
+}
+
 function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
+  const imageUrls = Array.isArray(payload.images)
+    ? payload.images.filter((item): item is string => typeof item === "string")
+    : [];
+
+  const variationSnapshots = Array.isArray(payload.variations)
+    ? payload.variations.map((item) => ({
+        imageUrls:
+          item && Array.isArray(item.images)
+            ? item.images.filter((image): image is string => typeof image === "string")
+            : [],
+        position:
+          item && (typeof item.position === "number" || typeof item.position === "string")
+            ? String(item.position)
+            : "",
+        title: item && typeof item.title === "string" ? item.title : "",
+      }))
+    : [];
+
+  const rawMainImageRef = payload.main_image_ref;
+  const resolvedMainImageRef = resolveSnapshotMainImageRef(
+    imageUrls,
+    variationSnapshots,
+    rawMainImageRef
+  );
+
   return {
     title: typeof payload.title === "string" ? payload.title : "",
     description: typeof payload.description === "string" ? payload.description : "",
@@ -114,23 +228,10 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
       typeof payload.price === "number" || typeof payload.price === "string"
         ? String(payload.price)
         : "",
-    imageUrls: Array.isArray(payload.images)
-      ? payload.images.filter((item): item is string => typeof item === "string")
-      : [],
+    imageUrls,
+    mainImageRef: resolvedMainImageRef,
     url: typeof payload.url === "string" ? payload.url : "",
-    variationSnapshots: Array.isArray(payload.variations)
-      ? payload.variations.map((item) => ({
-          imageUrls:
-            item && Array.isArray(item.images)
-              ? item.images.filter((image): image is string => typeof image === "string")
-              : [],
-          position:
-            item && (typeof item.position === "number" || typeof item.position === "string")
-              ? String(item.position)
-              : "",
-          title: item && typeof item.title === "string" ? item.title : "",
-        }))
-      : [],
+    variationSnapshots,
   };
 }
 
@@ -161,12 +262,19 @@ function createEditState(snapshot: EditSnapshot): EditState {
     })),
   }));
 
-  return {
-    ...snapshot,
+  const mainImageSelection = findMainImageSelectionFromSnapshot(
     images,
     variations,
+    snapshot.mainImageRef
+  );
+
+  return normalizeMainImageSelection({
+    ...snapshot,
+    images,
+    mainImageSelection,
+    variations,
     isDirty: false,
-  };
+  });
 }
 
 function isSameStringArray(a: string[], b: string[]): boolean {
@@ -187,20 +295,22 @@ function normalizeVariationPositions(
 }
 
 function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
-  if (state.title !== snapshot.title) return true;
-  if (state.description !== snapshot.description) return true;
-  if (state.currency !== snapshot.currency) return true;
-  if (state.price !== snapshot.price) return true;
-  if (state.url !== snapshot.url) return true;
-  if (state.images.some((image) => image.type === "new")) return true;
-  const existingUrls = state.images
+  const normalizedState = normalizeMainImageSelection(state);
+
+  if (normalizedState.title !== snapshot.title) return true;
+  if (normalizedState.description !== snapshot.description) return true;
+  if (normalizedState.currency !== snapshot.currency) return true;
+  if (normalizedState.price !== snapshot.price) return true;
+  if (normalizedState.url !== snapshot.url) return true;
+  if (normalizedState.images.some((image) => image.type === "new")) return true;
+  const existingUrls = normalizedState.images
     .filter((image) => image.type === "existing" && image.url)
     .map((image) => image.url as string);
   if (!isSameStringArray(existingUrls, snapshot.imageUrls)) return true;
 
-  if (state.variations.length !== snapshot.variationSnapshots.length) return true;
-  for (let i = 0; i < state.variations.length; i += 1) {
-    const current = state.variations[i];
+  if (normalizedState.variations.length !== snapshot.variationSnapshots.length) return true;
+  for (let i = 0; i < normalizedState.variations.length; i += 1) {
+    const current = normalizedState.variations[i];
     const original = snapshot.variationSnapshots[i];
     if (!original) return true;
     if (current.images.some((image) => image.type === "new")) return true;
@@ -210,6 +320,10 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
     if (!isSameStringArray(currentImageUrls, original.imageUrls)) return true;
     if (current.title !== original.title) return true;
     if (current.position !== original.position) return true;
+  }
+
+  if (!sameMainImageRef(getMainImageRefFromState(normalizedState), snapshot.mainImageRef)) {
+    return true;
   }
 
   return false;
@@ -414,6 +528,190 @@ function getVariationId(containerId: ImageContainerId): string | null {
   return containerId.slice("variation:".length) || null;
 }
 
+function getFirstMainImageSelection(state: EditState): MainImageSelection {
+  if (state.images.length > 0) {
+    return {
+      containerId: "main",
+      imageId: state.images[0].id,
+    };
+  }
+
+  for (const variation of state.variations) {
+    if (variation.images.length > 0) {
+      return {
+        containerId: toVariationContainerId(variation.id),
+        imageId: variation.images[0].id,
+      };
+    }
+  }
+
+  return null;
+}
+
+function findImageContainerById(
+  state: Pick<EditState, "images" | "variations">,
+  imageId: string
+): ImageContainerId | null {
+  if (state.images.some((image) => image.id === imageId)) return "main";
+
+  for (const variation of state.variations) {
+    if (variation.images.some((image) => image.id === imageId)) {
+      return toVariationContainerId(variation.id);
+    }
+  }
+
+  return null;
+}
+
+function isImageInContainer(
+  state: Pick<EditState, "images" | "variations">,
+  containerId: ImageContainerId,
+  imageId: string
+): boolean {
+  if (containerId === "main") {
+    return state.images.some((image) => image.id === imageId);
+  }
+
+  const variationId = getVariationId(containerId);
+  if (!variationId) return false;
+  const variation = state.variations.find((item) => item.id === variationId);
+  if (!variation) return false;
+  return variation.images.some((image) => image.id === imageId);
+}
+
+function normalizeMainImageSelection(state: EditState): EditState {
+  const selection = state.mainImageSelection;
+  if (!selection) {
+    return {
+      ...state,
+      mainImageSelection: getFirstMainImageSelection(state),
+    };
+  }
+
+  if (isImageInContainer(state, selection.containerId, selection.imageId)) {
+    return state;
+  }
+
+  const movedContainerId = findImageContainerById(state, selection.imageId);
+  if (movedContainerId) {
+    return {
+      ...state,
+      mainImageSelection: {
+        containerId: movedContainerId,
+        imageId: selection.imageId,
+      },
+    };
+  }
+
+  return {
+    ...state,
+    mainImageSelection: getFirstMainImageSelection(state),
+  };
+}
+
+function getMainImageRefFromState(state: EditState): SnapshotMainImageRef {
+  const normalized = normalizeMainImageSelection(state);
+  const selection = normalized.mainImageSelection;
+  if (!selection) return null;
+
+  if (selection.containerId === "main") {
+    const image = normalized.images.find((item) => item.id === selection.imageId);
+    if (!image || typeof image.url !== "string") return null;
+    const url = image.url.trim();
+    if (!url.length) return null;
+    return {
+      container: "main",
+      variationPosition: null,
+      url,
+    };
+  }
+
+  const variationId = getVariationId(selection.containerId);
+  if (!variationId) return null;
+  const variation = normalized.variations.find((item) => item.id === variationId);
+  if (!variation) return null;
+  const image = variation.images.find((item) => item.id === selection.imageId);
+  if (!image || typeof image.url !== "string") return null;
+  const url = image.url.trim();
+  if (!url.length) return null;
+
+  return {
+    container: "variation",
+    variationPosition: toNumberOrNull(variation.position),
+    url,
+  };
+}
+
+function findMainImageSelectionFromSnapshot(
+  images: EditImageItem[],
+  variations: EditVariationItem[],
+  mainImageRef: SnapshotMainImageRef
+): MainImageSelection {
+  if (mainImageRef?.container === "main") {
+    const image = images.find((item) => item.url === mainImageRef.url);
+    if (image) {
+      return {
+        containerId: "main",
+        imageId: image.id,
+      };
+    }
+  }
+
+  if (mainImageRef?.container === "variation") {
+    const variation = variations.find(
+      (item) => toNumberOrNull(item.position) === mainImageRef.variationPosition
+    );
+    const image = variation?.images.find((item) => item.url === mainImageRef.url);
+    if (variation && image) {
+      return {
+        containerId: toVariationContainerId(variation.id),
+        imageId: image.id,
+      };
+    }
+  }
+
+  if (images.length > 0) {
+    return {
+      containerId: "main",
+      imageId: images[0].id,
+    };
+  }
+
+  for (const variation of variations) {
+    if (variation.images.length > 0) {
+      return {
+        containerId: toVariationContainerId(variation.id),
+        imageId: variation.images[0].id,
+      };
+    }
+  }
+
+  return null;
+}
+
+function isMainImageSelection(
+  selection: MainImageSelection,
+  containerId: ImageContainerId,
+  imageId: string
+): boolean {
+  return (
+    selection?.containerId === containerId &&
+    selection?.imageId === imageId
+  );
+}
+
+function getSelectedVariationImage(
+  variation: EditVariationItem,
+  selectedImageId?: string
+): EditImageItem | null {
+  if (!variation.images.length) return null;
+  if (selectedImageId) {
+    const selected = variation.images.find((image) => image.id === selectedImageId);
+    if (selected) return selected;
+  }
+  return variation.images[0];
+}
+
 function moveImageBetweenContainers(
   state: EditState,
   sourceContainer: ImageContainerId,
@@ -554,8 +852,15 @@ function DraggableImageCard({
   imageClassName,
   badgeLabel,
   resolutionText,
+  isMain,
   onRemove,
+  onSetMain,
   onPreview,
+  onSelect,
+  interactionMode = "preview",
+  isSelected = false,
+  showInlineSetMain = true,
+  showInlineRemove = true,
   footer,
 }: {
   containerId: ImageContainerId;
@@ -564,8 +869,15 @@ function DraggableImageCard({
   imageClassName: string;
   badgeLabel: string;
   resolutionText?: string;
-  onRemove: () => void;
+  isMain: boolean;
+  onRemove?: () => void;
+  onSetMain?: (image: EditImageItem) => void;
   onPreview: (image: EditImageItem) => void;
+  onSelect?: (image: EditImageItem) => void;
+  interactionMode?: "preview" | "select";
+  isSelected?: boolean;
+  showInlineSetMain?: boolean;
+  showInlineRemove?: boolean;
   footer?: React.ReactNode;
 }) {
   const pointerDownRef = React.useRef<{ x: number; y: number } | null>(null);
@@ -589,9 +901,16 @@ function DraggableImageCard({
       style={style}
       className={cn(
         "group relative overflow-hidden rounded-lg border bg-muted",
+        isMain ? "border-amber-400 ring-2 ring-amber-300 ring-offset-2 ring-offset-background" : "",
+        isSelected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : "",
         isDragging ? "opacity-70" : ""
       )}
     >
+      {isMain ? (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-amber-400/95 py-1 text-center text-[10px] font-semibold tracking-[0.12em] text-amber-950">
+          MAIN IMAGE
+        </div>
+      ) : null}
       <img
         src={image.previewUrl}
         alt={alt}
@@ -609,6 +928,10 @@ function DraggableImageCard({
           if (isDragging) return;
           const pointerDown = pointerDownRef.current;
           pointerDownRef.current = null;
+          if (interactionMode === "select") {
+            onSelect?.(image);
+            return;
+          }
           if (!pointerDown) {
             onPreview(image);
             return;
@@ -624,18 +947,36 @@ function DraggableImageCard({
       <div className="absolute left-2 top-2 rounded bg-background/80 px-2 py-0.5 text-[10px] uppercase">
         {badgeLabel}
       </div>
-      <Button
-        type="button"
-        variant="secondary"
-        size="icon"
-        className={cn(
-          "absolute right-2 top-2 h-7 w-7",
-          "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-        )}
-        onClick={onRemove}
-      >
-        <X className="h-3.5 w-3.5" />
-      </Button>
+      <div className="absolute bottom-2 left-2">
+        {isMain ? (
+          <Badge className="h-5 px-2 text-[10px]">Main</Badge>
+        ) : showInlineSetMain ? (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="h-6 px-2 text-[10px]"
+            onClick={() => onSetMain?.(image)}
+          >
+            Set as main
+          </Button>
+        ) : null}
+      </div>
+      {showInlineRemove ? (
+        <Button
+          type="button"
+          variant="secondary"
+          size="icon"
+          className={cn(
+            "absolute right-2 h-7 w-7",
+            isMain ? "top-8" : "top-2",
+            "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+          )}
+          onClick={() => onRemove?.()}
+        >
+          <X className="h-3.5 w-3.5" />
+        </Button>
+      ) : null}
       <div
         className={cn(
           "absolute bottom-2 right-2 rounded bg-background/85 px-2 py-0.5 text-[10px]",
@@ -684,49 +1025,120 @@ async function toPayload(
   status?: ProductDraftStatus | null,
   url?: string | null
 ): Promise<ProductDraftPayload> {
-  const existingUrls = state.images
-    .filter((image) => image.type === "existing" && image.url)
-    .map((image) => image.url as string);
-  const newUrls = await Promise.all(
-    state.images
-      .filter((image) => image.type === "new" && image.file)
-      .map((image) => fileToDataUrl(image.file as File))
+  const normalizedState = normalizeMainImageSelection(state);
+
+  const mainImageEntries = await Promise.all(
+    normalizedState.images.map(async (image) => {
+      if (image.type === "existing" && typeof image.url === "string") {
+        const trimmed = image.url.trim();
+        return { id: image.id, url: trimmed.length ? trimmed : null };
+      }
+      if (image.type === "new" && image.file) {
+        return { id: image.id, url: await fileToDataUrl(image.file) };
+      }
+      return { id: image.id, url: null };
+    })
   );
-  const images = [...existingUrls, ...newUrls];
+  const images = mainImageEntries
+    .map((item) => item.url)
+    .filter((item): item is string => typeof item === "string" && item.length > 0);
 
   const variations = await Promise.all(
-    state.variations.map(async (variation) => {
-      const existingVariationImages = variation.images
-        .filter((image) => image.type === "existing" && image.url)
-        .map((image) => image.url as string)
-        .map((image) => image.trim())
-        .filter((image) => image.length > 0);
-      const newVariationImages = await Promise.all(
-        variation.images
-          .filter((image) => image.type === "new" && image.file)
-          .map((image) => fileToDataUrl(image.file as File))
+    normalizedState.variations.map(async (variation) => {
+      const imageEntries = await Promise.all(
+        variation.images.map(async (image) => {
+          if (image.type === "existing" && typeof image.url === "string") {
+            const trimmed = image.url.trim();
+            return { id: image.id, url: trimmed.length ? trimmed : null };
+          }
+          if (image.type === "new" && image.file) {
+            return { id: image.id, url: await fileToDataUrl(image.file) };
+          }
+          return { id: image.id, url: null };
+        })
       );
 
-      const positionValue = variation.position.trim();
-      const positionNumber = positionValue.length ? Number(positionValue) : null;
+      const positionNumber = toNumberOrNull(variation.position);
 
       return {
-        images: [...existingVariationImages, ...newVariationImages],
-        position: Number.isFinite(positionNumber) ? positionNumber : null,
+        variationId: variation.id,
+        images: imageEntries
+          .map((item) => item.url)
+          .filter((item): item is string => typeof item === "string" && item.length > 0),
+        imageEntries,
+        position: positionNumber,
         title: toNullableString(variation.title),
       };
     })
   );
 
+  const selection = normalizedState.mainImageSelection;
+  let mainImageRef: ProductDraftPayload["main_image_ref"] = null;
+  if (selection) {
+    if (selection.containerId === "main") {
+      const target = mainImageEntries.find((item) => item.id === selection.imageId);
+      if (target?.url) {
+        mainImageRef = {
+          container: "main",
+          variation_position: null,
+          url: target.url,
+        };
+      }
+    } else {
+      const variationId = getVariationId(selection.containerId);
+      const targetVariation = variations.find(
+        (variation) => variationId != null && variation.variationId === variationId
+      );
+      const target = targetVariation?.imageEntries.find(
+        (item) => item.id === selection.imageId
+      );
+      if (target?.url && targetVariation) {
+        mainImageRef = {
+          container: "variation",
+          variation_position: targetVariation.position,
+          url: target.url,
+        };
+      }
+    }
+  }
+
+  if (!mainImageRef) {
+    const fallbackMain = mainImageEntries.find((item) => item.url);
+    if (fallbackMain?.url) {
+      mainImageRef = {
+        container: "main",
+        variation_position: null,
+        url: fallbackMain.url,
+      };
+    } else {
+      const fallbackVariation = variations.find((variation) =>
+        variation.imageEntries.some((item) => item.url)
+      );
+      const fallbackVariationImage = fallbackVariation?.imageEntries.find((item) => item.url);
+      if (fallbackVariation?.position != null && fallbackVariationImage?.url) {
+        mainImageRef = {
+          container: "variation",
+          variation_position: fallbackVariation.position,
+          url: fallbackVariationImage.url,
+        };
+      }
+    }
+  }
+
   return {
-    title: toNullableString(state.title),
-    description: toNullableString(state.description),
-    currency: toNullableString(state.currency),
-    price: toNullableString(state.price),
+    title: toNullableString(normalizedState.title),
+    description: toNullableString(normalizedState.description),
+    currency: toNullableString(normalizedState.currency),
+    price: toNullableString(normalizedState.price),
     images: images.length ? images : null,
-    variations: variations.length ? variations : [],
+    variations: variations.map((variation) => ({
+      images: variation.images,
+      position: variation.position,
+      title: variation.title,
+    })),
+    main_image_ref: mainImageRef,
     status: status ?? null,
-    url: url ?? state.url ?? null,
+    url: url ?? normalizedState.url ?? null,
   };
 }
 
@@ -833,6 +1245,9 @@ export function AiProductDraftShow() {
   const [variationImageUrlInputs, setVariationImageUrlInputs] = React.useState<
     Record<string, string>
   >({});
+  const [selectedVariationImageIds, setSelectedVariationImageIds] = React.useState<
+    Record<string, string>
+  >({});
   const [imageResolutionById, setImageResolutionById] = React.useState<
     Record<string, string>
   >({});
@@ -884,7 +1299,7 @@ export function AiProductDraftShow() {
     (updater: (prev: EditState) => EditState) => {
       setEditState((prev) => {
         if (!prev) return prev;
-        const next = updater(prev);
+        const next = normalizeMainImageSelection(updater(prev));
         const snapshot = editSnapshotRef.current;
         return snapshot ? { ...next, isDirty: computeIsDirty(next, snapshot) } : next;
       });
@@ -973,6 +1388,7 @@ export function AiProductDraftShow() {
         return null;
       });
       setVariationImageUrlInputs({});
+      setSelectedVariationImageIds({});
       editSnapshotRef.current = null;
       return;
     }
@@ -985,6 +1401,7 @@ export function AiProductDraftShow() {
       return createEditState(snapshot);
     });
     setVariationImageUrlInputs({});
+    setSelectedVariationImageIds({});
   }, [draftPayload]);
 
   React.useEffect(() => {
@@ -1419,8 +1836,13 @@ export function AiProductDraftShow() {
                                       items={editState.variations.map((variation) => variation.id)}
                                       strategy={verticalListSortingStrategy}
                                     >
-                                      {editState.variations.map((variation) => (
-                                        <SortableVariationRow key={variation.id} id={variation.id}>
+                                      {editState.variations.map((variation) => {
+                                        const selectedVariationImage = getSelectedVariationImage(
+                                          variation,
+                                          selectedVariationImageIds[variation.id]
+                                        );
+                                        return (
+                                          <SortableVariationRow key={variation.id} id={variation.id}>
                                           <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
                                             <div className="sm:col-span-7">
                                               <DroppableImageContainer
@@ -1428,29 +1850,43 @@ export function AiProductDraftShow() {
                                                 isEnabled={activeDragType === "image_item"}
                                                 className="rounded-md p-1"
                                               >
-                                                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                                <div className="mb-2 flex items-center justify-between gap-2">
+                                                  <div className="text-xs text-muted-foreground">
+                                                    Click image to select, then use actions below
+                                                  </div>
+                                                  <div className="text-xs text-muted-foreground">
+                                                    {variation.images.length} image(s)
+                                                  </div>
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                                                   {variation.images.map((image) => (
                                                     <DraggableImageCard
                                                       key={image.id}
                                                       containerId={toVariationContainerId(variation.id)}
                                                       image={image}
                                                       alt="Variation"
-                                                      imageClassName="h-24 w-full object-cover"
+                                                      imageClassName="h-32 w-full object-cover"
                                                       badgeLabel={
                                                         image.type === "existing" ? "URL" : "Uploaded"
                                                       }
                                                       resolutionText={
                                                         imageResolutionById[image.id] ?? "—"
                                                       }
-                                                      onRemove={() =>
-                                                        updateEditState((prev) =>
-                                                          removeVariationImage(
-                                                            prev,
-                                                            variation.id,
-                                                            image.id
-                                                          )
-                                                        )
+                                                      interactionMode="select"
+                                                      isSelected={selectedVariationImage?.id === image.id}
+                                                      isMain={isMainImageSelection(
+                                                        editState.mainImageSelection,
+                                                        toVariationContainerId(variation.id),
+                                                        image.id
+                                                      )}
+                                                      onSelect={(nextImage) =>
+                                                        setSelectedVariationImageIds((prev) => ({
+                                                          ...prev,
+                                                          [variation.id]: nextImage.id,
+                                                        }))
                                                       }
+                                                      showInlineSetMain={false}
+                                                      showInlineRemove={false}
                                                       onPreview={(nextImage) =>
                                                         setPreviewImage({
                                                           src: nextImage.previewUrl,
@@ -1459,33 +1895,12 @@ export function AiProductDraftShow() {
                                                           label: "Variation image",
                                                         })
                                                       }
-                                                      footer={
-                                                        image.type === "existing" ? (
-                                                          <div className="border-t bg-background p-1.5">
-                                                            <Input
-                                                              value={image.url ?? ""}
-                                                              placeholder="https://..."
-                                                              className="h-7 text-xs"
-                                                              onChange={(e) =>
-                                                                updateEditState((prev) =>
-                                                                  updateVariationImageUrl(
-                                                                    prev,
-                                                                    variation.id,
-                                                                    image.id,
-                                                                    e.target.value
-                                                                  )
-                                                                )
-                                                              }
-                                                            />
-                                                          </div>
-                                                        ) : undefined
-                                                      }
                                                     />
                                                   ))}
                                                   <button
                                                     type="button"
                                                     className={cn(
-                                                      "flex h-24 flex-col items-center justify-center gap-1 rounded-lg border border-dashed text-[11px] text-muted-foreground transition-colors",
+                                                      "flex h-32 flex-col items-center justify-center gap-1 rounded-lg border border-dashed text-[11px] text-muted-foreground transition-colors",
                                                       "hover:border-primary hover:text-foreground"
                                                     )}
                                                     onClick={() => {
@@ -1568,6 +1983,103 @@ export function AiProductDraftShow() {
                                             </div>
                                           </div>
 
+                                          <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-2 py-2">
+                                            <div className="text-xs text-muted-foreground">
+                                              Selected:
+                                              {" "}
+                                              {selectedVariationImage
+                                                ? selectedVariationImage.type === "existing"
+                                                  ? "URL image"
+                                                  : "Uploaded image"
+                                                : "None"}
+                                            </div>
+                                            <Button
+                                              type="button"
+                                              variant="secondary"
+                                              size="sm"
+                                              disabled={
+                                                !selectedVariationImage ||
+                                                isMainImageSelection(
+                                                  editState.mainImageSelection,
+                                                  toVariationContainerId(variation.id),
+                                                  selectedVariationImage.id
+                                                )
+                                              }
+                                              onClick={() => {
+                                                if (!selectedVariationImage) return;
+                                                updateEditState((prev) => ({
+                                                  ...prev,
+                                                  mainImageSelection: {
+                                                    containerId: toVariationContainerId(variation.id),
+                                                    imageId: selectedVariationImage.id,
+                                                  },
+                                                }));
+                                              }}
+                                            >
+                                              {selectedVariationImage &&
+                                              isMainImageSelection(
+                                                editState.mainImageSelection,
+                                                toVariationContainerId(variation.id),
+                                                selectedVariationImage.id
+                                              )
+                                                ? "Selected is main"
+                                                : "Set selected as main"}
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              variant="outline"
+                                              size="sm"
+                                              disabled={!selectedVariationImage}
+                                              onClick={() => {
+                                                if (!selectedVariationImage) return;
+                                                setPreviewImage({
+                                                  src: selectedVariationImage.previewUrl,
+                                                  resolution:
+                                                    imageResolutionById[selectedVariationImage.id] ??
+                                                    "—",
+                                                  label: "Variation image",
+                                                });
+                                              }}
+                                            >
+                                              Preview selected
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              variant="destructive"
+                                              size="sm"
+                                              disabled={!selectedVariationImage}
+                                              onClick={() => {
+                                                if (!selectedVariationImage) return;
+                                                updateEditState((prev) =>
+                                                  removeVariationImage(
+                                                    prev,
+                                                    variation.id,
+                                                    selectedVariationImage.id
+                                                  )
+                                                );
+                                              }}
+                                            >
+                                              Remove selected
+                                            </Button>
+                                            {selectedVariationImage?.type === "existing" ? (
+                                              <Input
+                                                value={selectedVariationImage.url ?? ""}
+                                                placeholder="Selected image URL"
+                                                className="h-8 min-w-[16rem] flex-1"
+                                                onChange={(e) =>
+                                                  updateEditState((prev) =>
+                                                    updateVariationImageUrl(
+                                                      prev,
+                                                      variation.id,
+                                                      selectedVariationImage.id,
+                                                      e.target.value
+                                                    )
+                                                  )
+                                                }
+                                              />
+                                            ) : null}
+                                          </div>
+
                                           <div className="flex flex-wrap items-center gap-2">
                                             <Input
                                               placeholder="Add image URL"
@@ -1618,7 +2130,8 @@ export function AiProductDraftShow() {
                                             </Button>
                                           </div>
                                         </SortableVariationRow>
-                                      ))}
+                                        );
+                                      })}
                                     </SortableContext>
                                   </div>
                                 )}
@@ -1654,8 +2167,22 @@ export function AiProductDraftShow() {
                                     imageClassName="h-32 w-full object-cover"
                                     badgeLabel={image.type === "existing" ? "Original" : "New"}
                                     resolutionText={imageResolutionById[image.id] ?? "—"}
+                                    isMain={isMainImageSelection(
+                                      editState.mainImageSelection,
+                                      "main",
+                                      image.id
+                                    )}
                                     onRemove={() =>
                                       updateEditState((prev) => removeImage(prev, image))
+                                    }
+                                    onSetMain={(nextImage) =>
+                                      updateEditState((prev) => ({
+                                        ...prev,
+                                        mainImageSelection: {
+                                          containerId: "main",
+                                          imageId: nextImage.id,
+                                        },
+                                      }))
                                     }
                                     onPreview={(nextImage) =>
                                       setPreviewImage({
