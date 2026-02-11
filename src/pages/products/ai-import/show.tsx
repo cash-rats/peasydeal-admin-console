@@ -49,6 +49,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { ListView, ListViewHeader } from "@/components/refine-ui/views/list-view";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { GripVertical, ImagePlus, X } from "lucide-react";
 
@@ -554,6 +555,7 @@ function DraggableImageCard({
   badgeLabel,
   resolutionText,
   onRemove,
+  onPreview,
   footer,
 }: {
   containerId: ImageContainerId;
@@ -563,8 +565,10 @@ function DraggableImageCard({
   badgeLabel: string;
   resolutionText?: string;
   onRemove: () => void;
+  onPreview: (image: EditImageItem) => void;
   footer?: React.ReactNode;
 }) {
+  const pointerDownRef = React.useRef<{ x: number; y: number } | null>(null);
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `drag:${containerId}:${image.id}`,
@@ -595,6 +599,25 @@ function DraggableImageCard({
         loading="lazy"
         draggable={false}
         onDragStart={(event) => event.preventDefault()}
+        onPointerDown={(event) => {
+          pointerDownRef.current = { x: event.clientX, y: event.clientY };
+        }}
+        onPointerCancel={() => {
+          pointerDownRef.current = null;
+        }}
+        onClick={(event) => {
+          if (isDragging) return;
+          const pointerDown = pointerDownRef.current;
+          pointerDownRef.current = null;
+          if (!pointerDown) {
+            onPreview(image);
+            return;
+          }
+          const dx = Math.abs(event.clientX - pointerDown.x);
+          const dy = Math.abs(event.clientY - pointerDown.y);
+          if (dx > 6 || dy > 6) return;
+          onPreview(image);
+        }}
         {...attributes}
         {...listeners}
       />
@@ -813,6 +836,11 @@ export function AiProductDraftShow() {
   const [imageResolutionById, setImageResolutionById] = React.useState<
     Record<string, string>
   >({});
+  const [previewImage, setPreviewImage] = React.useState<{
+    src: string;
+    resolution: string;
+    label: string;
+  } | null>(null);
 
   const [editState, setEditState] = React.useState<EditState | null>(null);
   const editSnapshotRef = React.useRef<EditSnapshot | null>(null);
@@ -1423,6 +1451,14 @@ export function AiProductDraftShow() {
                                                           )
                                                         )
                                                       }
+                                                      onPreview={(nextImage) =>
+                                                        setPreviewImage({
+                                                          src: nextImage.previewUrl,
+                                                          resolution:
+                                                            imageResolutionById[nextImage.id] ?? "—",
+                                                          label: "Variation image",
+                                                        })
+                                                      }
                                                       footer={
                                                         image.type === "existing" ? (
                                                           <div className="border-t bg-background p-1.5">
@@ -1621,6 +1657,13 @@ export function AiProductDraftShow() {
                                     onRemove={() =>
                                       updateEditState((prev) => removeImage(prev, image))
                                     }
+                                    onPreview={(nextImage) =>
+                                      setPreviewImage({
+                                        src: nextImage.previewUrl,
+                                        resolution: imageResolutionById[nextImage.id] ?? "—",
+                                        label: "Draft image",
+                                      })
+                                    }
                                   />
                                 ))}
                                 <button
@@ -1675,6 +1718,34 @@ export function AiProductDraftShow() {
                       Draft payload is not available yet.
                     </div>
                   )}
+
+                  <Dialog
+                    open={!!previewImage}
+                    onOpenChange={(open) => {
+                      if (!open) setPreviewImage(null);
+                    }}
+                  >
+                    <DialogContent className="max-w-[min(96vw,1200px)] border-none bg-transparent p-0 shadow-none">
+                      <DialogTitle className="sr-only">
+                        {previewImage?.label ?? "Image preview"}
+                      </DialogTitle>
+                      {previewImage ? (
+                        <div className="overflow-hidden rounded-lg border bg-black">
+                          <div className="flex items-center justify-between border-b border-white/20 px-4 py-2 text-xs text-white/80">
+                            <span>{previewImage.label}</span>
+                            <span>{previewImage.resolution}</span>
+                          </div>
+                          <div className="flex h-[min(82vh,920px)] items-center justify-center p-3">
+                            <img
+                              src={previewImage.src}
+                              alt={previewImage.label}
+                              className="max-h-full max-w-full object-contain"
+                            />
+                          </div>
+                        </div>
+                      ) : null}
+                    </DialogContent>
+                  </Dialog>
                 </div>
               )}
             </>
