@@ -563,7 +563,7 @@ function DraggableImageCard({
   onRemove: () => void;
   footer?: React.ReactNode;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+  const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `drag:${containerId}:${image.id}`,
       data: {
@@ -575,7 +575,6 @@ function DraggableImageCard({
 
   const style = {
     transform: CSS.Translate.toString(transform),
-    transition,
   };
 
   return (
@@ -1470,17 +1469,17 @@ export function AiProductDraftShow() {
                               </div>
 
                               <div className="flex flex-col gap-2">
-                                <div className="flex items-center justify-between gap-2">
-                                  <Label>Images</Label>
-                                  <div className="text-xs text-muted-foreground">
-                                    {editState.images.length} image(s)
-                                  </div>
-                                </div>
                                 <DroppableImageContainer
                                   containerId="main"
                                   isEnabled={activeDragType === "image_item"}
-                                  className="rounded-md p-1"
+                                  className="flex min-h-[28rem] flex-col gap-2 rounded-lg border border-dashed p-3 sm:min-h-[32rem]"
                                 >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Label>Images</Label>
+                                    <div className="text-xs text-muted-foreground">
+                                      {editState.images.length} image(s)
+                                    </div>
+                                  </div>
                                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                                     {editState.images.map((image) => (
                                       <DraggableImageCard
@@ -1516,6 +1515,16 @@ export function AiProductDraftShow() {
                                       <ImagePlus className="h-5 w-5" />
                                       Drag & drop or click
                                     </button>
+                                  </div>
+                                  <div
+                                    className={cn(
+                                      "flex min-h-24 items-center justify-center rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground",
+                                      activeDragType === "image_item"
+                                        ? "border-primary/50 bg-primary/5 text-foreground"
+                                        : "bg-muted/20"
+                                    )}
+                                  >
+                                    Drop variation images anywhere in this area
                                   </div>
                                 </DroppableImageContainer>
                                 <input
