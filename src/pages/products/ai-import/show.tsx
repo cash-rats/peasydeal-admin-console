@@ -780,7 +780,6 @@ export function AiProductDraftShow() {
 
   const [isPublishing, setIsPublishing] = React.useState(false);
   const [isRejecting, setIsRejecting] = React.useState(false);
-  const [rejectReason, setRejectReason] = React.useState("");
   const [isSaving, setIsSaving] = React.useState(false);
   const [activeDragType, setActiveDragType] = React.useState<DragKind>(null);
   const [variationImageUrlInputs, setVariationImageUrlInputs] = React.useState<
@@ -965,7 +964,7 @@ export function AiProductDraftShow() {
     if (!draftId) return;
     setIsRejecting(true);
     try {
-      await rejectProductDraft(draftId, rejectReason);
+      await rejectProductDraft(draftId, "");
       open?.({ type: "success", message: "Rejected" });
       await refresh();
     } catch (e) {
@@ -1150,20 +1149,20 @@ export function AiProductDraftShow() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    <Card>
-                      <CardHeader>
-                        <CardTitle className="text-base">Editable Draft</CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        {editState ? (
-                          <DndContext
-                            sensors={dndSensors}
-                            collisionDetection={closestCenter}
-                            onDragStart={onDragStart}
-                            onDragCancel={onDragCancel}
-                            onDragEnd={onDragEnd}
-                          >
+                  {editState ? (
+                    <DndContext
+                      sensors={dndSensors}
+                      collisionDetection={closestCenter}
+                      onDragStart={onDragStart}
+                      onDragCancel={onDragCancel}
+                      onDragEnd={onDragEnd}
+                    >
+                      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                        <Card>
+                          <CardHeader>
+                            <CardTitle className="text-base">Editable Draft</CardTitle>
+                          </CardHeader>
+                          <CardContent>
                             <div className="flex flex-col gap-4">
                               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                                 <div className="flex flex-col gap-2">
@@ -1468,106 +1467,92 @@ export function AiProductDraftShow() {
                                 )}
                               </div>
 
-                              <div className="flex flex-col gap-2">
-                                <DroppableImageContainer
-                                  containerId="main"
-                                  isEnabled={activeDragType === "image_item"}
-                                  className="flex min-h-[28rem] flex-col gap-2 rounded-lg border border-dashed p-3 sm:min-h-[32rem]"
-                                >
-                                  <div className="flex items-center justify-between gap-2">
-                                    <Label>Images</Label>
-                                    <div className="text-xs text-muted-foreground">
-                                      {editState.images.length} image(s)
-                                    </div>
-                                  </div>
-                                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                                    {editState.images.map((image) => (
-                                      <DraggableImageCard
-                                        key={image.id}
-                                        containerId="main"
-                                        image={image}
-                                        alt="Draft"
-                                        imageClassName="h-32 w-full object-cover"
-                                        badgeLabel={
-                                          image.type === "existing" ? "Original" : "New"
-                                        }
-                                        onRemove={() =>
-                                          updateEditState((prev) => removeImage(prev, image))
-                                        }
-                                      />
-                                    ))}
-                                    <button
-                                      type="button"
-                                      className={cn(
-                                        "flex h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-xs text-muted-foreground transition-colors",
-                                        "hover:border-primary hover:text-foreground"
-                                      )}
-                                      onClick={() => fileInputRef.current?.click()}
-                                      onDragOver={(event) => {
-                                        event.preventDefault();
-                                      }}
-                                      onDrop={(event) => {
-                                        event.preventDefault();
-                                        const files = Array.from(event.dataTransfer.files);
-                                        updateEditState((prev) => addImages(prev, files));
-                                      }}
-                                    >
-                                      <ImagePlus className="h-5 w-5" />
-                                      Drag & drop or click
-                                    </button>
-                                  </div>
-                                  <div
-                                    className={cn(
-                                      "flex min-h-24 items-center justify-center rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground",
-                                      activeDragType === "image_item"
-                                        ? "border-primary/50 bg-primary/5 text-foreground"
-                                        : "bg-muted/20"
-                                    )}
-                                  >
-                                    Drop variation images anywhere in this area
-                                  </div>
-                                </DroppableImageContainer>
-                                <input
-                                  ref={fileInputRef}
-                                  type="file"
-                                  accept="image/*"
-                                  multiple
-                                  className="hidden"
-                                  onChange={(event) => {
-                                    const files = Array.from(event.target.files ?? []);
-                                    event.target.value = "";
+                            </div>
+                          </CardContent>
+                        </Card>
+
+                        <Card>
+                          <CardHeader>
+                            <CardTitle className="text-base">Images</CardTitle>
+                          </CardHeader>
+                          <CardContent className="flex flex-col gap-2">
+                            <DroppableImageContainer
+                              containerId="main"
+                              isEnabled={activeDragType === "image_item"}
+                              className="flex min-h-[28rem] flex-col gap-2 rounded-lg border border-dashed p-3 sm:min-h-[32rem]"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <Label>Images</Label>
+                                <div className="text-xs text-muted-foreground">
+                                  {editState.images.length} image(s)
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                                {editState.images.map((image) => (
+                                  <DraggableImageCard
+                                    key={image.id}
+                                    containerId="main"
+                                    image={image}
+                                    alt="Draft"
+                                    imageClassName="h-32 w-full object-cover"
+                                    badgeLabel={image.type === "existing" ? "Original" : "New"}
+                                    onRemove={() =>
+                                      updateEditState((prev) => removeImage(prev, image))
+                                    }
+                                  />
+                                ))}
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    "flex h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-xs text-muted-foreground transition-colors",
+                                    "hover:border-primary hover:text-foreground"
+                                  )}
+                                  onClick={() => fileInputRef.current?.click()}
+                                  onDragOver={(event) => {
+                                    event.preventDefault();
+                                  }}
+                                  onDrop={(event) => {
+                                    event.preventDefault();
+                                    const files = Array.from(event.dataTransfer.files);
                                     updateEditState((prev) => addImages(prev, files));
                                   }}
-                                />
+                                >
+                                  <ImagePlus className="h-5 w-5" />
+                                  Drag & drop or click
+                                </button>
                               </div>
-                            </div>
-                          </DndContext>
-                        ) : (
-                          <div className="text-sm text-muted-foreground">
-                            Draft payload is not available yet.
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
-
-                    <Card>
-                      <CardHeader>
-                        <CardTitle className="text-base">Reject Reason</CardTitle>
-                      </CardHeader>
-                      <CardContent className="flex flex-col gap-2">
-                        <Textarea
-                          rows={6}
-                          placeholder="Optional: why this draft should be rejected"
-                          value={rejectReason}
-                          onChange={(e) => setRejectReason(e.target.value)}
-                        />
-                        <div className="text-xs text-muted-foreground">
-                          Backend will validate required fields on publish; frontend
-                          does not block publish based on payload content.
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </div>
+                              <div
+                                className={cn(
+                                  "flex min-h-24 items-center justify-center rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground",
+                                  activeDragType === "image_item"
+                                    ? "border-primary/50 bg-primary/5 text-foreground"
+                                    : "bg-muted/20"
+                                )}
+                              >
+                                Drop variation images anywhere in this area
+                              </div>
+                            </DroppableImageContainer>
+                            <input
+                              ref={fileInputRef}
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              className="hidden"
+                              onChange={(event) => {
+                                const files = Array.from(event.target.files ?? []);
+                                event.target.value = "";
+                                updateEditState((prev) => addImages(prev, files));
+                              }}
+                            />
+                          </CardContent>
+                        </Card>
+                      </div>
+                    </DndContext>
+                  ) : (
+                    <div className="text-sm text-muted-foreground">
+                      Draft payload is not available yet.
+                    </div>
+                  )}
                 </div>
               )}
             </>
