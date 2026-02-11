@@ -639,7 +639,7 @@ function DraggableImageCard({
       <div
         className={cn(
           "absolute bottom-2 right-2 rounded bg-background/85 px-2 py-0.5 text-[10px]",
-          "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+          "text-foreground"
         )}
       >
         {resolutionText ?? "—"}
