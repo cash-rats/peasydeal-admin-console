@@ -552,6 +552,7 @@ function DraggableImageCard({
   alt,
   imageClassName,
   badgeLabel,
+  resolutionText,
   onRemove,
   footer,
 }: {
@@ -560,6 +561,7 @@ function DraggableImageCard({
   alt: string;
   imageClassName: string;
   badgeLabel: string;
+  resolutionText?: string;
   onRemove: () => void;
   footer?: React.ReactNode;
 }) {
@@ -594,7 +596,10 @@ function DraggableImageCard({
         type="button"
         variant="secondary"
         size="icon"
-        className="absolute bottom-2 left-2 h-7 w-7 cursor-grab active:cursor-grabbing"
+        className={cn(
+          "absolute bottom-2 left-2 h-7 w-7 cursor-grab active:cursor-grabbing",
+          "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+        )}
         {...attributes}
         {...listeners}
       >
@@ -604,14 +609,38 @@ function DraggableImageCard({
         type="button"
         variant="secondary"
         size="icon"
-        className="absolute right-2 top-2 h-7 w-7"
+        className={cn(
+          "absolute right-2 top-2 h-7 w-7",
+          "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+        )}
         onClick={onRemove}
       >
         <X className="h-3.5 w-3.5" />
       </Button>
+      <div
+        className={cn(
+          "absolute bottom-2 right-2 rounded bg-background/85 px-2 py-0.5 text-[10px]",
+          "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+        )}
+      >
+        {resolutionText ?? "—"}
+      </div>
       {footer}
     </div>
   );
+}
+
+async function readImageResolution(imageUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      resolve(`${image.naturalWidth}x${image.naturalHeight}`);
+    };
+    image.onerror = () => {
+      resolve("—");
+    };
+    image.src = imageUrl;
+  });
 }
 
 function toNullableString(value: string): string | null {
@@ -785,10 +814,14 @@ export function AiProductDraftShow() {
   const [variationImageUrlInputs, setVariationImageUrlInputs] = React.useState<
     Record<string, string>
   >({});
+  const [imageResolutionById, setImageResolutionById] = React.useState<
+    Record<string, string>
+  >({});
 
   const [editState, setEditState] = React.useState<EditState | null>(null);
   const editSnapshotRef = React.useRef<EditSnapshot | null>(null);
   const editStateRef = React.useRef<EditState | null>(null);
+  const imageResolutionCacheRef = React.useRef<Map<string, string>>(new Map());
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const draftPayload = React.useMemo(() => draft?.draft ?? null, [draft]);
@@ -933,6 +966,64 @@ export function AiProductDraftShow() {
   React.useEffect(() => {
     editStateRef.current = editState;
   }, [editState]);
+
+  const imageResolutionTargets = React.useMemo(() => {
+    if (!editState) return [] as Array<{ id: string; previewUrl: string }>;
+
+    const mainImages = editState.images.map((image) => ({
+      id: image.id,
+      previewUrl: image.previewUrl,
+    }));
+
+    const variationImages = editState.variations.flatMap((variation) =>
+      variation.images.map((image) => ({
+        id: image.id,
+        previewUrl: image.previewUrl,
+      }))
+    );
+
+    return [...mainImages, ...variationImages];
+  }, [editState]);
+
+  const imageResolutionSignature = React.useMemo(
+    () =>
+      imageResolutionTargets
+        .map((item) => `${item.id}:${item.previewUrl}`)
+        .sort()
+        .join("|"),
+    [imageResolutionTargets]
+  );
+
+  React.useEffect(() => {
+    if (!imageResolutionTargets.length) {
+      setImageResolutionById({});
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadResolutions = async () => {
+      const entries = await Promise.all(
+        imageResolutionTargets.map(async (item) => {
+          const cached = imageResolutionCacheRef.current.get(item.previewUrl);
+          if (cached) return [item.id, cached] as const;
+
+          const resolution = await readImageResolution(item.previewUrl);
+          imageResolutionCacheRef.current.set(item.previewUrl, resolution);
+          return [item.id, resolution] as const;
+        })
+      );
+
+      if (cancelled) return;
+      setImageResolutionById(Object.fromEntries(entries));
+    };
+
+    void loadResolutions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [imageResolutionSignature, imageResolutionTargets]);
 
   React.useEffect(() => {
     return () => {
@@ -1293,6 +1384,9 @@ export function AiProductDraftShow() {
                                                       badgeLabel={
                                                         image.type === "existing" ? "URL" : "Uploaded"
                                                       }
+                                                      resolutionText={
+                                                        imageResolutionById[image.id] ?? "—"
+                                                      }
                                                       onRemove={() =>
                                                         updateEditState((prev) =>
                                                           removeVariationImage(
@@ -1496,6 +1590,7 @@ export function AiProductDraftShow() {
                                     alt="Draft"
                                     imageClassName="h-32 w-full object-cover"
                                     badgeLabel={image.type === "existing" ? "Original" : "New"}
+                                    resolutionText={imageResolutionById[image.id] ?? "—"}
                                     onRemove={() =>
                                       updateEditState((prev) => removeImage(prev, image))
                                     }
