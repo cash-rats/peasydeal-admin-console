@@ -1925,28 +1925,27 @@ export function AiProductDraftShow() {
                                                       resolutionText={
                                                         imageResolutionById[image.id] ?? "—"
                                                       }
-                                                      interactionMode="select"
                                                       isSelected={selectedVariationImage?.id === image.id}
                                                       isMain={isMainImageSelection(
                                                         editState.mainImageSelection,
                                                         toVariationContainerId(variation.id),
                                                         image.id
                                                       )}
-                                                      onSelect={(nextImage) =>
-                                                        setSelectedVariationImageIds((prev) => ({
-                                                          ...prev,
-                                                          [variation.id]: nextImage.id,
-                                                        }))
-                                                      }
                                                       showInlineSetMain={false}
                                                       showInlineRemove={false}
                                                       onPreview={(nextImage) =>
-                                                        setPreviewImage({
-                                                          src: nextImage.previewUrl,
-                                                          resolution:
-                                                            imageResolutionById[nextImage.id] ?? "—",
-                                                          label: "Variation image",
-                                                        })
+                                                        {
+                                                          setSelectedVariationImageIds((prev) => ({
+                                                            ...prev,
+                                                            [variation.id]: nextImage.id,
+                                                          }));
+                                                          setPreviewImage({
+                                                            src: nextImage.previewUrl,
+                                                            resolution:
+                                                              imageResolutionById[nextImage.id] ?? "—",
+                                                            label: "Variation image",
+                                                          });
+                                                        }
                                                       }
                                                     />
                                                   ))}
