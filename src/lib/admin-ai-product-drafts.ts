@@ -12,6 +12,7 @@ export type ProductDraftStatus =
   | "REJECTED";
 
 export type ProductDraftPayload = {
+  category_ids?: number[] | null;
   captured_at?: string | null;
   currency?: string | null;
   description?: string | null;
@@ -50,6 +51,29 @@ export type CreateDraftRequest = {
   url: string;
 };
 
+export type CategoryBranchNode = {
+  id: number;
+  name: string;
+  label: string;
+  tier: number;
+};
+
+export type CategoryTaxonomyCandidate = {
+  leaf_id: number;
+  leaf_name: string;
+  leaf_label: string;
+  leaf_tier: number;
+  matched_tiers: number[];
+  matched_path: string[];
+  branch: CategoryBranchNode[];
+};
+
+export type CategoryTaxonomySearchResponse = {
+  query: string;
+  count: number;
+  candidates: CategoryTaxonomyCandidate[];
+};
+
 export async function enqueueCrawlJob(
   body: CreateDraftRequest
 ): Promise<{ ok?: boolean; id: string }> {
@@ -85,6 +109,41 @@ export async function getProductDraft(draftId: string): Promise<ProductDraft> {
     const err = await response.json().catch(() => ({}));
     const message =
       typeof err?.message === "string" ? err.message : "Failed to load draft";
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+export async function searchCategoryTaxonomy(
+  query: string,
+  options?: {
+    limit?: number;
+    includeParents?: boolean;
+  }
+): Promise<CategoryTaxonomySearchResponse> {
+  const trimmed = query.trim();
+  if (!trimmed.length) {
+    return { query: "", count: 0, candidates: [] };
+  }
+
+  const params = new URLSearchParams({
+    q: trimmed,
+    limit: String(options?.limit ?? 20),
+    include_parents: options?.includeParents === false ? "false" : "true",
+  });
+
+  const response = await apiFetch(
+    withApiBaseUrl(`/v1/admin/categories/taxonomy/search?${params.toString()}`),
+    {
+      method: "GET",
+    }
+  );
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    const message =
+      typeof err?.message === "string" ? err.message : "Failed to search categories";
     throw new Error(message);
   }
 

@@ -28,7 +28,9 @@ import {
   isTerminalStatus,
   publishProductDraft,
   rejectProductDraft,
+  searchCategoryTaxonomy,
   updateProductDraft,
+  type CategoryTaxonomyCandidate,
   type ProductDraft,
   type ProductDraftPayload,
   type ProductDraftStatus,
@@ -51,9 +53,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { ListView, ListViewHeader } from "@/components/refine-ui/views/list-view";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { GripVertical, ImagePlus, X } from "lucide-react";
+import { GripVertical, ImagePlus, Loader2, X } from "lucide-react";
 
 type EditSnapshot = {
+  categoryIds: number[];
   title: string;
   description: string;
   currency: string;
@@ -83,6 +86,11 @@ type EditVariationItem = {
   title: string;
   position: string;
   images: EditImageItem[];
+};
+
+type SelectedCategoryPreview = {
+  leafLabel: string;
+  branchPath: string;
 };
 
 type ImageContainerId = "main" | `variation:${string}`;
@@ -133,6 +141,31 @@ function uniqueStringArray(values: string[]): string[] {
     next.push(trimmed);
   }
   return next;
+}
+
+function uniqueNumberArray(values: number[]): number[] {
+  const seen = new Set<number>();
+  const next: number[] = [];
+  for (const value of values) {
+    if (!Number.isFinite(value) || seen.has(value)) continue;
+    seen.add(value);
+    next.push(value);
+  }
+  return next;
+}
+
+function toCategoryIds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+
+  const parsed = raw
+    .map((item) => {
+      if (typeof item === "number") return item;
+      if (typeof item === "string") return Number(item);
+      return NaN;
+    })
+    .filter((item) => Number.isFinite(item));
+
+  return uniqueNumberArray(parsed);
 }
 
 function fileSignature(file: File): string {
@@ -261,6 +294,7 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
   );
 
   return {
+    categoryIds: toCategoryIds(payload.category_ids),
     title: typeof payload.title === "string" ? payload.title : "",
     description: typeof payload.description === "string" ? payload.description : "",
     currency: typeof payload.currency === "string" ? payload.currency : "",
@@ -325,6 +359,14 @@ function isSameStringArray(a: string[], b: string[]): boolean {
   return true;
 }
 
+function isSameNumberArray(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 function normalizeVariationPositions(
   variations: EditVariationItem[]
 ): EditVariationItem[] {
@@ -337,6 +379,7 @@ function normalizeVariationPositions(
 function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
   const normalizedState = normalizeMainImageSelection(state);
 
+  if (!isSameNumberArray(normalizedState.categoryIds, snapshot.categoryIds)) return true;
   if (normalizedState.title !== snapshot.title) return true;
   if (normalizedState.description !== snapshot.description) return true;
   if (normalizedState.currency !== snapshot.currency) return true;
@@ -1179,6 +1222,7 @@ async function toPayload(
   }
 
   return {
+    category_ids: normalizedState.categoryIds.length ? normalizedState.categoryIds : null,
     title: toNullableString(normalizedState.title),
     description: toNullableString(normalizedState.description),
     currency: toNullableString(normalizedState.currency),
@@ -1309,6 +1353,14 @@ export function AiProductDraftShow() {
     resolution: string;
     label: string;
   } | null>(null);
+  const [categoryQuery, setCategoryQuery] = React.useState("");
+  const [categoryCandidates, setCategoryCandidates] = React.useState<CategoryTaxonomyCandidate[]>(
+    []
+  );
+  const [isCategorySearching, setIsCategorySearching] = React.useState(false);
+  const [categorySearchError, setCategorySearchError] = React.useState<string | null>(null);
+  const [selectedCategoryPreview, setSelectedCategoryPreview] =
+    React.useState<SelectedCategoryPreview | null>(null);
 
   const [editState, setEditState] = React.useState<EditState | null>(null);
   const editSnapshotRef = React.useRef<EditSnapshot | null>(null);
@@ -1317,6 +1369,7 @@ export function AiProductDraftShow() {
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const draftPayload = React.useMemo(() => draft?.draft ?? null, [draft]);
+  const categoryQueryTrimmed = React.useMemo(() => categoryQuery.trim(), [categoryQuery]);
 
   const refresh = React.useCallback(async () => {
     if (!draftId) return;
@@ -1347,6 +1400,44 @@ export function AiProductDraftShow() {
 
     return () => window.clearInterval(timer);
   }, [draft, draftId, refresh]);
+
+  React.useEffect(() => {
+    if (!categoryQueryTrimmed.length) {
+      setCategoryCandidates([]);
+      setCategorySearchError(null);
+      setIsCategorySearching(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsCategorySearching(true);
+    setCategorySearchError(null);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await searchCategoryTaxonomy(categoryQueryTrimmed, {
+          limit: 20,
+          includeParents: true,
+        });
+        if (cancelled) return;
+        setCategoryCandidates(Array.isArray(result.candidates) ? result.candidates : []);
+      } catch (e) {
+        if (cancelled) return;
+        const message = e instanceof Error ? e.message : "Failed to search categories";
+        setCategorySearchError(message);
+        setCategoryCandidates([]);
+      } finally {
+        if (!cancelled) {
+          setIsCategorySearching(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [categoryQueryTrimmed]);
 
   const updateEditState = React.useCallback(
     (updater: (prev: EditState) => EditState) => {
@@ -1440,6 +1531,11 @@ export function AiProductDraftShow() {
         revokeNewVariationPreviews(prev);
         return null;
       });
+      setCategoryQuery("");
+      setCategoryCandidates([]);
+      setCategorySearchError(null);
+      setIsCategorySearching(false);
+      setSelectedCategoryPreview(null);
       setVariationImageUrlInputs({});
       setSelectedVariationImageIds({});
       editSnapshotRef.current = null;
@@ -1453,6 +1549,11 @@ export function AiProductDraftShow() {
       revokeNewVariationPreviews(prev);
       return createEditState(snapshot);
     });
+    setCategoryQuery("");
+    setCategoryCandidates([]);
+    setCategorySearchError(null);
+    setIsCategorySearching(false);
+    setSelectedCategoryPreview(null);
     setVariationImageUrlInputs({});
     setSelectedVariationImageIds({});
   }, [draftPayload]);
@@ -1526,8 +1627,19 @@ export function AiProductDraftShow() {
     };
   }, []);
 
+  const hasCategoryIds = (editState?.categoryIds.length ?? 0) > 0;
+  const publishBlockedByCategory = !hasCategoryIds;
+
   const onPublish = async () => {
     if (!draftId) return;
+    if (publishBlockedByCategory) {
+      open?.({
+        type: "error",
+        message: "Category required",
+        description: "Select a category before publishing.",
+      });
+      return;
+    }
     setIsPublishing(true);
     try {
       const result = await publishProductDraft(draftId);
@@ -1582,6 +1694,41 @@ export function AiProductDraftShow() {
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const onSelectCategoryCandidate = (candidate: CategoryTaxonomyCandidate) => {
+    const branchIds = uniqueNumberArray(
+      candidate.branch
+        .map((node) => node.id)
+        .filter((value) => Number.isFinite(value))
+    );
+    const branchPath = candidate.branch
+      .map((node) => node.label.trim())
+      .filter((label) => label.length > 0)
+      .join(" > ");
+
+    updateEditState((prev) => ({
+      ...prev,
+      categoryIds: branchIds,
+    }));
+    setSelectedCategoryPreview({
+      leafLabel: candidate.leaf_label,
+      branchPath,
+    });
+    setCategoryQuery("");
+    setCategoryCandidates([]);
+    setCategorySearchError(null);
+  };
+
+  const onClearCategorySelection = () => {
+    updateEditState((prev) => ({
+      ...prev,
+      categoryIds: [],
+    }));
+    setSelectedCategoryPreview(null);
+    setCategoryQuery("");
+    setCategoryCandidates([]);
+    setCategorySearchError(null);
   };
 
   if (!draftId) {
@@ -1692,45 +1839,56 @@ export function AiProductDraftShow() {
 
               {draft.status === "READY_FOR_REVIEW" && (
                 <div className="flex flex-col gap-4">
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                     <div className="text-sm font-medium">Review</div>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          if (!editSnapshotRef.current) return;
-                          setEditState((prev) => {
-                            revokeNewImagePreviews(prev);
-                            revokeNewVariationPreviews(prev);
-                            return createEditState(editSnapshotRef.current as EditSnapshot);
-                          });
-                        }}
-                        disabled={!editState || !editState.isDirty}
-                      >
-                        Reset
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        onClick={() => void onSave()}
-                        disabled={!editState || !editState.isDirty || isSaving}
-                      >
-                        {isSaving ? "Saving..." : "Save changes"}
-                      </Button>
-                      <Button
-                        onClick={() => void onPublish()}
-                        disabled={
-                          isPublishing || isRejecting || isSaving || !!editState?.isDirty
-                        }
-                      >
-                        {isPublishing ? "Publishing..." : "Publish"}
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        onClick={() => void onReject()}
-                        disabled={isPublishing || isRejecting}
-                      >
-                        {isRejecting ? "Rejecting..." : "Reject"}
-                      </Button>
+                    <div className="flex flex-col items-start gap-1 lg:items-end">
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            if (!editSnapshotRef.current) return;
+                            setEditState((prev) => {
+                              revokeNewImagePreviews(prev);
+                              revokeNewVariationPreviews(prev);
+                              return createEditState(editSnapshotRef.current as EditSnapshot);
+                            });
+                          }}
+                          disabled={!editState || !editState.isDirty}
+                        >
+                          Reset
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => void onSave()}
+                          disabled={!editState || !editState.isDirty || isSaving}
+                        >
+                          {isSaving ? "Saving..." : "Save changes"}
+                        </Button>
+                        <Button
+                          onClick={() => void onPublish()}
+                          disabled={
+                            isPublishing ||
+                            isRejecting ||
+                            isSaving ||
+                            !!editState?.isDirty ||
+                            publishBlockedByCategory
+                          }
+                        >
+                          {isPublishing ? "Publishing..." : "Publish"}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => void onReject()}
+                          disabled={isPublishing || isRejecting}
+                        >
+                          {isRejecting ? "Rejecting..." : "Reject"}
+                        </Button>
+                      </div>
+                      {publishBlockedByCategory ? (
+                        <div className="text-xs text-destructive">
+                          Category is required before publish.
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
@@ -1838,6 +1996,113 @@ export function AiProductDraftShow() {
                                     }
                                     placeholder="0.00"
                                   />
+                                </div>
+                              </div>
+
+                              <div className="flex flex-col gap-2">
+                                <Label htmlFor="draft-category-search">Category</Label>
+                                <Input
+                                  id="draft-category-search"
+                                  value={categoryQuery}
+                                  onChange={(event) => setCategoryQuery(event.target.value)}
+                                  placeholder="Search categories (e.g. Mice)"
+                                  autoComplete="off"
+                                  className={cn(
+                                    isCategorySearching
+                                      ? "border-primary/60 ring-2 ring-primary/20"
+                                      : ""
+                                  )}
+                                />
+                                <div className="text-xs text-muted-foreground">
+                                  Search and select one category candidate. Saving stores the
+                                  selected branch ids in <code>category_ids</code>.
+                                </div>
+                                {isCategorySearching ? (
+                                  <div className="flex items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-sm font-medium text-primary">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    <span>Searching categories...</span>
+                                  </div>
+                                ) : null}
+                                {categorySearchError ? (
+                                  <div className="text-xs text-destructive">
+                                    {categorySearchError}
+                                  </div>
+                                ) : null}
+                                {!isCategorySearching &&
+                                !categorySearchError &&
+                                categoryQueryTrimmed.length > 0 &&
+                                categoryCandidates.length === 0 ? (
+                                  <div className="text-xs text-muted-foreground">
+                                    No categories found.
+                                  </div>
+                                ) : null}
+                                {!isCategorySearching && categoryCandidates.length > 0 ? (
+                                  <div className="max-h-64 overflow-auto rounded-md border">
+                                    {categoryCandidates.map((candidate) => {
+                                      const branchPath = candidate.branch
+                                        .map((node) => node.label.trim())
+                                        .filter((label) => label.length > 0)
+                                        .join(" > ");
+                                      const matchedPath = candidate.matched_path
+                                        .map((item) => item.trim())
+                                        .filter((item) => item.length > 0)
+                                        .join(" > ");
+                                      return (
+                                        <button
+                                          key={`${candidate.leaf_id}-${candidate.leaf_name}`}
+                                          type="button"
+                                          className={cn(
+                                            "w-full border-b px-3 py-2 text-left text-sm last:border-b-0",
+                                            "hover:bg-muted/60"
+                                          )}
+                                          onClick={() => onSelectCategoryCandidate(candidate)}
+                                        >
+                                          <div className="font-medium">{candidate.leaf_label}</div>
+                                          <div className="text-xs text-muted-foreground">
+                                            {branchPath || "No branch path"}
+                                          </div>
+                                          {matchedPath.length ? (
+                                            <div className="text-[11px] text-muted-foreground/90">
+                                              Match: {matchedPath}
+                                            </div>
+                                          ) : null}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                ) : null}
+
+                                <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs">
+                                  {editState.categoryIds.length ? (
+                                    <div className="flex flex-col gap-2">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="font-medium">
+                                          {selectedCategoryPreview?.leafLabel ?? "Selected category"}
+                                        </div>
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-7 px-2 text-xs"
+                                          onClick={onClearCategorySelection}
+                                        >
+                                          Clear
+                                        </Button>
+                                      </div>
+                                      {selectedCategoryPreview?.branchPath ? (
+                                        <div className="text-muted-foreground">
+                                          {selectedCategoryPreview.branchPath}
+                                        </div>
+                                      ) : null}
+                                      <div className="text-muted-foreground">
+                                        Category IDs: {editState.categoryIds.join(", ")}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="text-destructive">
+                                      No category selected. Category is required before publish.
+                                    </div>
+                                  )}
                                 </div>
                               </div>
 
