@@ -78,6 +78,7 @@ type EditImageItem = {
 type VariationSnapshotItem = {
   imageUrls: string[];
   position: string;
+  price: string;
   title: string;
 };
 
@@ -85,6 +86,7 @@ type EditVariationItem = {
   id: string;
   title: string;
   position: string;
+  price: string;
   images: EditImageItem[];
 };
 
@@ -129,6 +131,19 @@ function toNumberOrNull(value: string): number | null {
   if (!trimmed.length) return null;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function resolveVariationPrice(
+  rawPrice: string | number | null | undefined,
+  fallbackPrice: string
+): string {
+  if (typeof rawPrice === "number" || typeof rawPrice === "string") {
+    const normalized = String(rawPrice).trim();
+    if (normalized.length > 0) return normalized;
+  }
+
+  const fallback = fallbackPrice.trim();
+  return fallback.length > 0 ? fallback : "";
 }
 
 function uniqueStringArray(values: string[]): string[] {
@@ -266,6 +281,11 @@ function resolveSnapshotMainImageRef(
 }
 
 function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
+  const topLevelPrice =
+    typeof payload.price === "number" || typeof payload.price === "string"
+      ? String(payload.price)
+      : "";
+
   const imageUrls = Array.isArray(payload.images)
     ? uniqueStringArray(
         payload.images.filter((item): item is string => typeof item === "string")
@@ -282,6 +302,7 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
           item && (typeof item.position === "number" || typeof item.position === "string")
             ? String(item.position)
             : "",
+        price: resolveVariationPrice(item?.price, topLevelPrice),
         title: item && typeof item.title === "string" ? item.title : "",
       }))
     : [];
@@ -298,10 +319,7 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
     title: typeof payload.title === "string" ? payload.title : "",
     description: typeof payload.description === "string" ? payload.description : "",
     currency: typeof payload.currency === "string" ? payload.currency : "",
-    price:
-      typeof payload.price === "number" || typeof payload.price === "string"
-        ? String(payload.price)
-        : "",
+    price: topLevelPrice,
     imageUrls,
     mainImageRef: resolvedMainImageRef,
     url: typeof payload.url === "string" ? payload.url : "",
@@ -328,6 +346,7 @@ function createEditState(snapshot: EditSnapshot): EditState {
     id: newId(),
     title: variation.title,
     position: variation.position,
+    price: variation.price,
     images: variation.imageUrls.map((url) => ({
       id: newId(),
       type: "existing" as const,
@@ -403,6 +422,7 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
     if (!isSameStringArray(currentImageUrls, original.imageUrls)) return true;
     if (current.title !== original.title) return true;
     if (current.position !== original.position) return true;
+    if (current.price !== original.price) return true;
   }
 
   if (!sameMainImageRef(getMainImageRefFromState(normalizedState), snapshot.mainImageRef)) {
@@ -476,6 +496,7 @@ function addVariation(state: EditState): EditState {
     id: newId(),
     title: "",
     position: "0",
+    price: state.price.trim(),
     images: [],
   };
 
@@ -1163,6 +1184,7 @@ async function toPayload(
           .filter((item): item is string => typeof item === "string" && item.length > 0),
         imageEntries,
         position: positionNumber,
+        price: toNullableString(resolveVariationPrice(variation.price, normalizedState.price)),
         title: toNullableString(variation.title),
       };
     })
@@ -1231,6 +1253,7 @@ async function toPayload(
     variations: variations.map((variation) => ({
       images: variation.images,
       position: variation.position,
+      price: variation.price,
       title: variation.title,
     })),
     main_image_ref: mainImageRef,
@@ -2266,36 +2289,60 @@ export function AiProductDraftShow() {
                                               </DroppableImageContainer>
                                             </div>
 
-                                            <div className="sm:col-span-3 flex flex-col gap-1">
-                                              <Label className="text-xs">Title</Label>
-                                              <Input
-                                                value={variation.title}
-                                                placeholder="Variation title"
-                                                onChange={(e) =>
-                                                  updateEditState((prev) =>
-                                                    updateVariationField(
-                                                      prev,
-                                                      variation.id,
-                                                      (item) => ({
-                                                        ...item,
-                                                        title: e.target.value,
-                                                      })
+                                            <div className="sm:col-span-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                              <div className="flex flex-col gap-1 sm:col-span-2">
+                                                <Label className="text-xs">Title</Label>
+                                                <Input
+                                                  value={variation.title}
+                                                  placeholder="Variation title"
+                                                  onChange={(e) =>
+                                                    updateEditState((prev) =>
+                                                      updateVariationField(
+                                                        prev,
+                                                        variation.id,
+                                                        (item) => ({
+                                                          ...item,
+                                                          title: e.target.value,
+                                                        })
+                                                      )
                                                     )
-                                                  )
-                                                }
-                                              />
-                                            </div>
+                                                  }
+                                                />
+                                              </div>
 
-                                            <div className="sm:col-span-2 flex flex-col gap-1">
-                                              <Label className="text-xs">Position</Label>
-                                              <Input
-                                                value={variation.position}
-                                                type="number"
-                                                inputMode="numeric"
-                                                readOnly
-                                              />
-                                              <div className="text-[10px] text-muted-foreground">
-                                                Drag to reorder (0-based)
+                                              <div className="flex flex-col gap-1">
+                                                <Label className="text-xs">Price</Label>
+                                                <Input
+                                                  value={variation.price}
+                                                  type="text"
+                                                  inputMode="decimal"
+                                                  placeholder="Variation price"
+                                                  onChange={(e) =>
+                                                    updateEditState((prev) =>
+                                                      updateVariationField(
+                                                        prev,
+                                                        variation.id,
+                                                        (item) => ({
+                                                          ...item,
+                                                          price: e.target.value,
+                                                        })
+                                                      )
+                                                    )
+                                                  }
+                                                />
+                                              </div>
+
+                                              <div className="flex flex-col gap-1">
+                                                <Label className="text-xs">Position</Label>
+                                                <Input
+                                                  value={variation.position}
+                                                  type="number"
+                                                  inputMode="numeric"
+                                                  readOnly
+                                                />
+                                                <div className="text-[10px] text-muted-foreground">
+                                                  Drag to reorder (0-based)
+                                                </div>
                                               </div>
                                             </div>
                                           </div>
