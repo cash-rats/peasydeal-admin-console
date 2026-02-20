@@ -1,6 +1,32 @@
 import { withApiBaseUrl } from "@/lib/api-base-url";
 import { apiFetch } from "@/lib/api-client";
 
+function getErrorMessageFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const record = payload as Record<string, unknown>;
+
+  if (typeof record.error === "string" && record.error.trim()) {
+    return record.error;
+  }
+
+  if (typeof record.message === "string" && record.message.trim()) {
+    return record.message;
+  }
+
+  return null;
+}
+
+async function parseApiErrorMessage(
+  response: Response,
+  fallbackMessage: string
+): Promise<string> {
+  const payload = await response.json().catch(() => null);
+  return getErrorMessageFromPayload(payload) ?? fallbackMessage;
+}
+
 export type ProductDraftStatus =
   | "FOUND"
   | "QUEUED_FOR_DRAFT"
@@ -87,12 +113,7 @@ export async function enqueueCrawlJob(
   });
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    const message =
-      typeof err?.message === "string"
-        ? err.message
-        : "Failed to enqueue crawl job";
-    throw new Error(message);
+    throw new Error(await parseApiErrorMessage(response, "Failed to enqueue crawl job"));
   }
 
   return response.json();
@@ -107,10 +128,7 @@ export async function getProductDraft(draftId: string): Promise<ProductDraft> {
   );
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    const message =
-      typeof err?.message === "string" ? err.message : "Failed to load draft";
-    throw new Error(message);
+    throw new Error(await parseApiErrorMessage(response, "Failed to load draft"));
   }
 
   return response.json();
@@ -142,10 +160,7 @@ export async function searchCategoryTaxonomy(
   );
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    const message =
-      typeof err?.message === "string" ? err.message : "Failed to search categories";
-    throw new Error(message);
+    throw new Error(await parseApiErrorMessage(response, "Failed to search categories"));
   }
 
   return response.json();
@@ -167,10 +182,7 @@ export async function updateProductDraft(
   );
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    const message =
-      typeof err?.message === "string" ? err.message : "Failed to update draft";
-    throw new Error(message);
+    throw new Error(await parseApiErrorMessage(response, "Failed to update draft"));
   }
 
   return response.json();
@@ -191,10 +203,7 @@ export async function publishProductDraft(
   );
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    const message =
-      typeof err?.message === "string" ? err.message : "Failed to publish";
-    throw new Error(message);
+    throw new Error(await parseApiErrorMessage(response, "Failed to publish"));
   }
 
   return response.json();
@@ -216,10 +225,7 @@ export async function rejectProductDraft(
   );
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    const message =
-      typeof err?.message === "string" ? err.message : "Failed to reject";
-    throw new Error(message);
+    throw new Error(await parseApiErrorMessage(response, "Failed to reject"));
   }
 
   return response.json();
