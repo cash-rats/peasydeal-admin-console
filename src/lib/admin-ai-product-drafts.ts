@@ -190,9 +190,7 @@ export async function updateProductDraft(
 }
 
 export type PublishProductDraftRequest = {
-  final_payload?: {
-    visibility?: boolean;
-  };
+  final_payload?: ProductDraftPayload;
 };
 
 export type PublishProductDraftResponse = {

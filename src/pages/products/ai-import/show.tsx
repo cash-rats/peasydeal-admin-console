@@ -1661,6 +1661,14 @@ export function AiProductDraftShow() {
 
   const onPublish = async () => {
     if (!draftId) return;
+    if (!editState) {
+      open?.({
+        type: "error",
+        message: "Draft payload missing",
+        description: "Draft payload is required before publishing.",
+      });
+      return;
+    }
     if (publishBlockedByCategory) {
       open?.({
         type: "error",
@@ -1671,10 +1679,10 @@ export function AiProductDraftShow() {
     }
     setIsPublishing(true);
     try {
+      const finalPayload = await toPayload(editState, draft?.status ?? null, draft?.draft?.url);
+      finalPayload.visibility = publishVisibility;
       const result = await publishProductDraft(draftId, {
-        final_payload: {
-          visibility: publishVisibility,
-        },
+        final_payload: finalPayload,
       });
       const publishedVisibility =
         typeof result.visibility === "boolean" ? result.visibility : publishVisibility;

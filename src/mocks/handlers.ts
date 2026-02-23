@@ -152,12 +152,11 @@ export const handlers = [
     }
 
     const body = (await request.json().catch(() => null)) as
-      | { final_payload?: { visibility?: boolean } }
+      | { final_payload?: ProductDraftPayload }
       | null;
+    const finalPayload = body?.final_payload ?? {};
     const visibility =
-      typeof body?.final_payload?.visibility === "boolean"
-        ? body.final_payload.visibility
-        : true;
+      typeof finalPayload.visibility === "boolean" ? finalPayload.visibility : true;
 
     const computed = computeStatus(stored);
     if (computed !== "READY_FOR_REVIEW") {
@@ -169,11 +168,13 @@ export const handlers = [
 
     const published_at_ms = nowMs();
     const published_product_id = newId();
+    const ensured = ensurePayload(stored);
     const next: StoredDraft = {
-      ...ensurePayload(stored),
+      ...ensured,
       draft: {
-        ...ensurePayload(stored).draft,
-        visibility,
+        ...ensured.draft,
+        ...finalPayload,
+        visibility: typeof finalPayload.visibility === "boolean" ? finalPayload.visibility : visibility,
       },
       status: "PUBLISHED",
       updated_at_ms: published_at_ms,
