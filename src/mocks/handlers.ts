@@ -144,12 +144,20 @@ export const handlers = [
     return HttpResponse.json({ items, next_cursor: null });
   }),
 
-  http.post("*/v1/product-drafts/:draftId/publish", ({ params }) => {
+  http.post("*/v1/product-drafts/:draftId/publish", async ({ params, request }) => {
     const draftId = String((params as Record<string, string>).draftId);
     const stored = drafts.get(draftId);
     if (!stored) {
       return HttpResponse.json({ message: "Not found" }, { status: 404 });
     }
+
+    const body = (await request.json().catch(() => null)) as
+      | { final_payload?: { visibility?: boolean } }
+      | null;
+    const visibility =
+      typeof body?.final_payload?.visibility === "boolean"
+        ? body.final_payload.visibility
+        : true;
 
     const computed = computeStatus(stored);
     if (computed !== "READY_FOR_REVIEW") {
@@ -163,6 +171,10 @@ export const handlers = [
     const published_product_id = newId();
     const next: StoredDraft = {
       ...ensurePayload(stored),
+      draft: {
+        ...ensurePayload(stored).draft,
+        visibility,
+      },
       status: "PUBLISHED",
       updated_at_ms: published_at_ms,
       published_at_ms,
@@ -175,6 +187,7 @@ export const handlers = [
       draft_id: draftId,
       status: "PUBLISHED",
       product_id: published_product_id,
+      visibility,
     });
   }),
 

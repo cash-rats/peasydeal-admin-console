@@ -18,6 +18,7 @@ export type ProductDraftPayload = {
   status?: string | null;
   title?: string | null;
   url?: string | null;
+  visibility?: boolean | null;
   [key: string]: unknown;
 };
 

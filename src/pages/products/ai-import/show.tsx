@@ -39,6 +39,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -1361,6 +1362,7 @@ export function AiProductDraftShow() {
   const [isPublishing, setIsPublishing] = React.useState(false);
   const [isRejecting, setIsRejecting] = React.useState(false);
   const [isSaving, setIsSaving] = React.useState(false);
+  const [publishVisibility, setPublishVisibility] = React.useState(true);
   const [activeDragType, setActiveDragType] = React.useState<DragKind>(null);
   const [variationImageUrlInputs, setVariationImageUrlInputs] = React.useState<
     Record<string, string>
@@ -1411,6 +1413,10 @@ export function AiProductDraftShow() {
   React.useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  React.useEffect(() => {
+    setPublishVisibility(true);
+  }, [draftId]);
 
   React.useEffect(() => {
     if (!draftId) return;
@@ -1665,11 +1671,17 @@ export function AiProductDraftShow() {
     }
     setIsPublishing(true);
     try {
-      const result = await publishProductDraft(draftId);
+      const result = await publishProductDraft(draftId, {
+        final_payload: {
+          visibility: publishVisibility,
+        },
+      });
+      const publishedVisibility =
+        typeof result.visibility === "boolean" ? result.visibility : publishVisibility;
       open?.({
         type: "success",
         message: "Published",
-        description: `Product ID: ${result.product_id}`,
+        description: `Product ID: ${result.product_id} · ${publishedVisibility ? "已上架" : "未上架"}`,
       });
       await refresh();
     } catch (e) {
@@ -1866,6 +1878,26 @@ export function AiProductDraftShow() {
                     <div className="text-sm font-medium">Review</div>
                     <div className="flex flex-col items-start gap-1 lg:items-end">
                       <div className="flex items-center gap-2">
+                        <div className="mr-2 flex items-start gap-2 rounded-md border px-2 py-1.5">
+                          <Checkbox
+                            id="publish-visibility"
+                            checked={publishVisibility}
+                            onCheckedChange={(checked) =>
+                              setPublishVisibility(
+                                checked === "indeterminate" ? true : checked
+                              )
+                            }
+                            disabled={isPublishing || isRejecting || isSaving}
+                          />
+                          <div className="flex flex-col">
+                            <Label htmlFor="publish-visibility" className="leading-none">
+                              上架
+                            </Label>
+                            <span className="text-[11px] text-muted-foreground">
+                              勾選後發佈即對客可見，可立即下單
+                            </span>
+                          </div>
+                        </div>
                         <Button
                           variant="outline"
                           onClick={() => {

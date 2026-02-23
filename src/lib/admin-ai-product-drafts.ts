@@ -59,6 +59,7 @@ export type ProductDraftPayload = {
   status?: string | null;
   title?: string | null;
   url?: string | null;
+  visibility?: boolean | null;
   [key: string]: unknown;
 };
 
@@ -188,9 +189,23 @@ export async function updateProductDraft(
   return response.json();
 }
 
+export type PublishProductDraftRequest = {
+  final_payload?: {
+    visibility?: boolean;
+  };
+};
+
+export type PublishProductDraftResponse = {
+  draft_id: string;
+  status: ProductDraftStatus;
+  product_id: string;
+  visibility?: boolean;
+};
+
 export async function publishProductDraft(
-  draftId: string
-): Promise<{ draft_id: string; status: ProductDraftStatus; product_id: string }> {
+  draftId: string,
+  payload?: PublishProductDraftRequest
+): Promise<PublishProductDraftResponse> {
   const response = await apiFetch(
     withApiBaseUrl(`/v1/product-drafts/${draftId}/publish`),
     {
@@ -198,7 +213,7 @@ export async function publishProductDraft(
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify(payload ?? {}),
     }
   );
 
