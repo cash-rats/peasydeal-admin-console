@@ -58,6 +58,7 @@ import { GripVertical, ImagePlus, Loader2, X } from "lucide-react";
 
 type EditSnapshot = {
   categoryIds: number[];
+  categoryBranch: CategoryBranchItem[];
   title: string;
   description: string;
   currency: string;
@@ -96,6 +97,12 @@ type EditVariationItem = {
 type SelectedCategoryPreview = {
   leafLabel: string;
   branchPath: string;
+};
+
+type CategoryBranchItem = {
+  id: number;
+  tier: number | null;
+  isLeaf: boolean;
 };
 
 type ImageContainerId = "main" | `variation:${string}`;
@@ -198,6 +205,60 @@ function toCategoryIds(raw: unknown): number[] {
     .filter((item) => Number.isFinite(item));
 
   return uniqueNumberArray(parsed);
+}
+
+function buildCategoryBranchFromIds(ids: number[]): CategoryBranchItem[] {
+  return ids.map((id, index) => ({
+    id,
+    tier: null,
+    isLeaf: index === ids.length - 1,
+  }));
+}
+
+function toCategoryBranch(raw: unknown): CategoryBranchItem[] {
+  if (!Array.isArray(raw)) return [];
+
+  const seen = new Set<number>();
+  const parsed: CategoryBranchItem[] = [];
+
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const idRaw = record.id;
+    const tierRaw = record.tier;
+    const id =
+      typeof idRaw === "number"
+        ? idRaw
+        : typeof idRaw === "string"
+          ? Number(idRaw)
+          : NaN;
+
+    if (!Number.isFinite(id) || seen.has(id)) continue;
+    seen.add(id);
+
+    const tier =
+      typeof tierRaw === "number"
+        ? (Number.isFinite(tierRaw) ? tierRaw : null)
+        : typeof tierRaw === "string"
+          ? (Number.isFinite(Number(tierRaw)) ? Number(tierRaw) : null)
+          : null;
+
+    parsed.push({
+      id,
+      tier,
+      isLeaf: record.is_leaf === true,
+    });
+  }
+
+  if (!parsed.length) return [];
+
+  const explicitLeafIndex = parsed.findIndex((item) => item.isLeaf);
+  const leafIndex = explicitLeafIndex >= 0 ? explicitLeafIndex : parsed.length - 1;
+
+  return parsed.map((item, index) => ({
+    ...item,
+    isLeaf: index === leafIndex,
+  }));
 }
 
 function fileSignature(file: File): string {
@@ -330,9 +391,18 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
     variationSnapshots,
     rawMainImageRef
   );
+  const parsedCategoryIds = toCategoryIds(payload.category_ids);
+  const parsedCategoryBranch = toCategoryBranch(payload.category_branch);
+  const categoryIds = parsedCategoryIds.length
+    ? parsedCategoryIds
+    : parsedCategoryBranch.map((item) => item.id);
+  const categoryBranch = parsedCategoryBranch.length
+    ? parsedCategoryBranch
+    : buildCategoryBranchFromIds(categoryIds);
 
   return {
-    categoryIds: toCategoryIds(payload.category_ids),
+    categoryIds,
+    categoryBranch,
     title: typeof payload.title === "string" ? payload.title : "",
     description: typeof payload.description === "string" ? payload.description : "",
     currency: typeof payload.currency === "string" ? payload.currency : "",
@@ -405,6 +475,16 @@ function isSameNumberArray(a: number[], b: number[]): boolean {
   return true;
 }
 
+function isSameCategoryBranch(a: CategoryBranchItem[], b: CategoryBranchItem[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i].id !== b[i].id) return false;
+    if (a[i].tier !== b[i].tier) return false;
+    if (a[i].isLeaf !== b[i].isLeaf) return false;
+  }
+  return true;
+}
+
 function normalizeVariationPositions(
   variations: EditVariationItem[]
 ): EditVariationItem[] {
@@ -418,6 +498,7 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
   const normalizedState = normalizeMainImageSelection(state);
 
   if (!isSameNumberArray(normalizedState.categoryIds, snapshot.categoryIds)) return true;
+  if (!isSameCategoryBranch(normalizedState.categoryBranch, snapshot.categoryBranch)) return true;
   if (normalizedState.title !== snapshot.title) return true;
   if (normalizedState.description !== snapshot.description) return true;
   if (normalizedState.currency !== snapshot.currency) return true;
@@ -1178,6 +1259,12 @@ async function toPayload(
   url?: string | null
 ): Promise<ProductDraftPayload> {
   const normalizedState = normalizeMainImageSelection(state);
+  const categoryIds = normalizedState.categoryIds.length
+    ? normalizedState.categoryIds
+    : normalizedState.categoryBranch.map((item) => item.id);
+  const categoryBranch = normalizedState.categoryBranch.length
+    ? normalizedState.categoryBranch
+    : buildCategoryBranchFromIds(categoryIds);
 
   const mainImageEntries = await Promise.all(
     normalizedState.images.map(async (image) => {
@@ -1279,7 +1366,14 @@ async function toPayload(
   }
 
   return {
-    category_ids: normalizedState.categoryIds.length ? normalizedState.categoryIds : null,
+    category_ids: categoryIds.length ? categoryIds : null,
+    category_branch: categoryBranch.length
+      ? categoryBranch.map((item) => ({
+          id: item.id,
+          tier: item.tier,
+          is_leaf: item.isLeaf,
+        }))
+      : null,
     title: toNullableString(normalizedState.title),
     description: toNullableString(normalizedState.description),
     currency: toNullableString(normalizedState.currency),
@@ -1777,11 +1871,14 @@ export function AiProductDraftShow() {
   };
 
   const onSelectCategoryCandidate = (candidate: CategoryTaxonomyCandidate) => {
-    const branchIds = uniqueNumberArray(
-      candidate.branch
-        .map((node) => node.id)
-        .filter((value) => Number.isFinite(value))
-    );
+    const branch: CategoryBranchItem[] = candidate.branch
+      .map((node, index, all) => ({
+        id: node.id,
+        tier: Number.isFinite(node.tier) ? node.tier : null,
+        isLeaf: index === all.length - 1,
+      }))
+      .filter((node) => Number.isFinite(node.id));
+    const branchIds = uniqueNumberArray(branch.map((node) => node.id));
     const branchPath = candidate.branch
       .map((node) => node.label.trim())
       .filter((label) => label.length > 0)
@@ -1790,6 +1887,7 @@ export function AiProductDraftShow() {
     updateEditState((prev) => ({
       ...prev,
       categoryIds: branchIds,
+      categoryBranch: branch,
     }));
     setSelectedCategoryPreview({
       leafLabel: candidate.leaf_label,
@@ -1804,6 +1902,7 @@ export function AiProductDraftShow() {
     updateEditState((prev) => ({
       ...prev,
       categoryIds: [],
+      categoryBranch: [],
     }));
     setSelectedCategoryPreview(null);
     setCategoryQuery("");
@@ -2153,8 +2252,8 @@ export function AiProductDraftShow() {
                                   )}
                                 />
                                 <div className="text-xs text-muted-foreground">
-                                  Search and select one category candidate. Saving stores the
-                                  selected branch ids in <code>category_ids</code>.
+                                  Search and select one category candidate. Saving stores
+                                  <code> category_ids</code> and <code> category_branch</code>.
                                 </div>
                                 {isCategorySearching ? (
                                   <div className="flex items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-sm font-medium text-primary">

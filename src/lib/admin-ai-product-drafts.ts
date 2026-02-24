@@ -39,6 +39,13 @@ export type ProductDraftStatus =
 
 export type ProductDraftPayload = {
   category_ids?: number[] | null;
+  category_branch?:
+    | {
+        id: number;
+        tier?: number | null;
+        is_leaf?: boolean;
+      }[]
+    | null;
   captured_at?: string | null;
   currency?: string | null;
   description?: string | null;
