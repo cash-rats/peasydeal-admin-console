@@ -152,7 +152,7 @@ export const handlers = [
     }
 
     const body = (await request.json().catch(() => null)) as
-      | { final_payload?: ProductDraftPayload }
+      | { draft_id?: string; final_payload?: ProductDraftPayload }
       | null;
     const finalPayload = body?.final_payload ?? {};
     const visibility =

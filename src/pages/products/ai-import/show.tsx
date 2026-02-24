@@ -1682,6 +1682,7 @@ export function AiProductDraftShow() {
       const finalPayload = await toPayload(editState, draft?.status ?? null, draft?.draft?.url);
       finalPayload.visibility = publishVisibility;
       const result = await publishProductDraft(draftId, {
+        draft_id: draftId,
         final_payload: finalPayload,
       });
       const publishedVisibility =

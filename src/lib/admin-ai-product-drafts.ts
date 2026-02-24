@@ -190,6 +190,7 @@ export async function updateProductDraft(
 }
 
 export type PublishProductDraftRequest = {
+  draft_id: string;
   final_payload?: ProductDraftPayload;
 };
 
@@ -202,7 +203,7 @@ export type PublishProductDraftResponse = {
 
 export async function publishProductDraft(
   draftId: string,
-  payload?: PublishProductDraftRequest
+  payload: PublishProductDraftRequest
 ): Promise<PublishProductDraftResponse> {
   const response = await apiFetch(
     withApiBaseUrl(`/v1/product-drafts/${draftId}/publish`),
@@ -211,7 +212,7 @@ export async function publishProductDraft(
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify(payload ?? {}),
+      body: JSON.stringify(payload),
     }
   );
 
