@@ -152,9 +152,10 @@ export const handlers = [
     }
 
     const body = (await request.json().catch(() => null)) as
-      | { draft_id?: string; final_payload?: ProductDraftPayload }
+      | ({ draft_id?: string } & ProductDraftPayload)
       | null;
-    const finalPayload = body?.final_payload ?? {};
+    const finalPayload: ProductDraftPayload = { ...(body ?? {}) };
+    delete (finalPayload as { draft_id?: string }).draft_id;
     const visibility =
       typeof finalPayload.visibility === "boolean" ? finalPayload.visibility : true;
 
