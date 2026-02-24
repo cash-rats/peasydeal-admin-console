@@ -14,8 +14,10 @@ export type ProductDraftPayload = {
   description?: string | null;
   images?: string[] | null;
   price?: string | number | null;
+  shipping_fee?: number | null;
   source?: string | null;
   status?: string | null;
+  tax_rate?: string | number | null;
   title?: string | null;
   url?: string | null;
   visibility?: boolean | null;

@@ -55,8 +55,10 @@ export type ProductDraftPayload = {
     title?: string | null;
   }[] | null;
   price?: string | number | null;
+  shipping_fee?: number | null;
   source?: string | null;
   status?: string | null;
+  tax_rate?: string | number | null;
   title?: string | null;
   url?: string | null;
   visibility?: boolean | null;

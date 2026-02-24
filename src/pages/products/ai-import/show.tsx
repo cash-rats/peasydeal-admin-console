@@ -62,6 +62,8 @@ type EditSnapshot = {
   description: string;
   currency: string;
   price: string;
+  taxRate: string;
+  shippingFee: string;
   imageUrls: string[];
   mainImageRef: SnapshotMainImageRef;
   url: string;
@@ -145,6 +147,20 @@ function resolveVariationPrice(
 
   const fallback = fallbackPrice.trim();
   return fallback.length > 0 ? fallback : "";
+}
+
+function resolveDecimalString(
+  raw: string | number | null | undefined,
+  fallback: string
+): string {
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? String(raw) : fallback;
+  }
+  if (typeof raw === "string") {
+    const normalized = raw.trim();
+    return normalized.length > 0 ? normalized : fallback;
+  }
+  return fallback;
 }
 
 function uniqueStringArray(values: string[]): string[] {
@@ -321,6 +337,8 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
     description: typeof payload.description === "string" ? payload.description : "",
     currency: typeof payload.currency === "string" ? payload.currency : "",
     price: topLevelPrice,
+    taxRate: resolveDecimalString(payload.tax_rate, "0"),
+    shippingFee: resolveDecimalString(payload.shipping_fee, "0"),
     imageUrls,
     mainImageRef: resolvedMainImageRef,
     url: typeof payload.url === "string" ? payload.url : "",
@@ -404,6 +422,8 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
   if (normalizedState.description !== snapshot.description) return true;
   if (normalizedState.currency !== snapshot.currency) return true;
   if (normalizedState.price !== snapshot.price) return true;
+  if (normalizedState.taxRate !== snapshot.taxRate) return true;
+  if (normalizedState.shippingFee !== snapshot.shippingFee) return true;
   if (normalizedState.url !== snapshot.url) return true;
   if (normalizedState.images.some((image) => image.type === "new")) return true;
   const existingUrls = normalizedState.images
@@ -1126,6 +1146,20 @@ function toNullableString(value: string): string | null {
   return trimmed.length ? trimmed : null;
 }
 
+function toNonNegativeNumberOrZero(value: string): number {
+  const parsed = toNumberOrNull(value);
+  if (parsed == null) return 0;
+  return parsed < 0 ? 0 : parsed;
+}
+
+function toTaxRateNumberOrZero(value: string): number {
+  const parsed = toNumberOrNull(value);
+  if (parsed == null) return 0;
+  if (parsed < 0) return 0;
+  if (parsed > 1) return 1;
+  return parsed;
+}
+
 async function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1250,6 +1284,8 @@ async function toPayload(
     description: toNullableString(normalizedState.description),
     currency: toNullableString(normalizedState.currency),
     price: toNullableString(normalizedState.price),
+    tax_rate: toTaxRateNumberOrZero(normalizedState.taxRate),
+    shipping_fee: toNonNegativeNumberOrZero(normalizedState.shippingFee),
     images: images.length ? images : null,
     variations: variations.map((variation) => ({
       images: variation.images,
@@ -2043,7 +2079,7 @@ export function AiProductDraftShow() {
                                 </div>
                               </div>
 
-                              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                                 <div className="flex flex-col gap-2">
                                   <Label htmlFor="draft-price">Price</Label>
                                   <Input
@@ -2059,6 +2095,45 @@ export function AiProductDraftShow() {
                                       }))
                                     }
                                     placeholder="0.00"
+                                  />
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                  <Label htmlFor="draft-tax-rate">Tax Rate (0~1)</Label>
+                                  <Input
+                                    id="draft-tax-rate"
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    max="1"
+                                    inputMode="decimal"
+                                    value={editState.taxRate}
+                                    onChange={(e) =>
+                                      updateEditState((prev) => ({
+                                        ...prev,
+                                        taxRate: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="0"
+                                  />
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                  <Label htmlFor="draft-shipping-fee">Shipping Fee</Label>
+                                  <Input
+                                    id="draft-shipping-fee"
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    inputMode="decimal"
+                                    value={editState.shippingFee}
+                                    onChange={(e) =>
+                                      updateEditState((prev) => ({
+                                        ...prev,
+                                        shippingFee: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="0"
                                   />
                                 </div>
                               </div>
