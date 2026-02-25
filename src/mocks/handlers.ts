@@ -144,7 +144,7 @@ export const handlers = [
     return HttpResponse.json({ items, next_cursor: null });
   }),
 
-  http.post("*/v1/product-drafts/:draftId/publish", async ({ params, request }) => {
+  http.post("*/v1/admin/product-drafts/:draftId/publish", async ({ params, request }) => {
     const draftId = String((params as Record<string, string>).draftId);
     const stored = drafts.get(draftId);
     if (!stored) {
@@ -154,7 +154,11 @@ export const handlers = [
     const body = (await request.json().catch(() => null)) as
       | ({ draft_id?: string } & ProductDraftPayload)
       | null;
-    const finalPayload: ProductDraftPayload = { ...(body ?? {}) };
+    if (!body || body.draft_id !== draftId) {
+      return HttpResponse.json({ message: "draft_id mismatch" }, { status: 400 });
+    }
+
+    const finalPayload: ProductDraftPayload = { ...body };
     delete (finalPayload as { draft_id?: string }).draft_id;
     const visibility =
       typeof finalPayload.visibility === "boolean" ? finalPayload.visibility : true;

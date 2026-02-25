@@ -3,6 +3,7 @@ import React from "react";
 import { useNavigate } from "react-router";
 
 import { enqueueCrawlJob } from "@/lib/admin-ai-product-drafts";
+import { canonicalizeProductUrl } from "@/lib/canonicalize-product-url";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,7 +45,7 @@ export function AiProductDraftCreate() {
 
     setIsSubmitting(true);
     try {
-      const result = await enqueueCrawlJob({ url: trimmed });
+      const result = await enqueueCrawlJob({ url: canonicalizeProductUrl(trimmed) });
 
       open?.({
         type: "success",

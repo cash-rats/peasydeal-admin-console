@@ -35,6 +35,7 @@ import {
   type ProductDraftPayload,
   type ProductDraftStatus,
 } from "@/lib/admin-ai-product-drafts";
+import { canonicalizeProductUrl } from "@/lib/canonicalize-product-url";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1233,14 +1234,6 @@ function toNonNegativeNumberOrZero(value: string): number {
   return parsed < 0 ? 0 : parsed;
 }
 
-function toTaxRateNumberOrZero(value: string): number {
-  const parsed = toNumberOrNull(value);
-  if (parsed == null) return 0;
-  if (parsed < 0) return 0;
-  if (parsed > 1) return 1;
-  return parsed;
-}
-
 async function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1365,6 +1358,10 @@ async function toPayload(
     }
   }
 
+  const rawUrl = url ?? normalizedState.url ?? null;
+  const normalizedUrl =
+    typeof rawUrl === "string" ? canonicalizeProductUrl(rawUrl) : rawUrl;
+
   return {
     category_ids: categoryIds.length ? categoryIds : null,
     category_branch: categoryBranch.length
@@ -1378,7 +1375,7 @@ async function toPayload(
     description: toNullableString(normalizedState.description),
     currency: toNullableString(normalizedState.currency),
     price: toNullableString(normalizedState.price),
-    tax_rate: toTaxRateNumberOrZero(normalizedState.taxRate),
+    tax_rate: toNonNegativeNumberOrZero(normalizedState.taxRate),
     shipping_fee: toNonNegativeNumberOrZero(normalizedState.shippingFee),
     images: images.length ? images : null,
     variations: variations.map((variation) => ({
@@ -1389,8 +1386,175 @@ async function toPayload(
     })),
     main_image_ref: mainImageRef,
     status: status ?? null,
-    url: url ?? normalizedState.url ?? null,
+    url: normalizedUrl,
   };
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!normalized.length) return null;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function isUsableImageUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed.length) return false;
+
+  try {
+    const url = new URL(trimmed);
+    return (
+      url.protocol === "http:" ||
+      url.protocol === "https:" ||
+      url.protocol === "data:"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validatePublishPayload(
+  draftId: string,
+  payload: ProductDraftPayload & { draft_id: string }
+): string | null {
+  if (payload.draft_id !== draftId) {
+    return "Draft ID mismatch.";
+  }
+
+  if (typeof payload.shipping_fee !== "number" || !Number.isFinite(payload.shipping_fee)) {
+    return "Shipping fee must be a valid number.";
+  }
+  if (payload.shipping_fee < 0) {
+    return "Shipping fee must be greater than or equal to 0.";
+  }
+
+  if (typeof payload.tax_rate !== "number" || !Number.isFinite(payload.tax_rate)) {
+    return "Tax rate must be a valid number.";
+  }
+  if (payload.tax_rate < 0) {
+    return "Tax rate must be greater than or equal to 0.";
+  }
+
+  const categoryIds = Array.isArray(payload.category_ids)
+    ? payload.category_ids.filter(
+        (item): item is number => typeof item === "number" && Number.isFinite(item)
+      )
+    : [];
+  if (!categoryIds.length) {
+    return "At least one category is required.";
+  }
+
+  const categoryBranch = Array.isArray(payload.category_branch)
+    ? payload.category_branch.filter(
+        (
+          item
+        ): item is {
+          id: number;
+          tier?: number | null;
+          is_leaf?: boolean;
+        } =>
+          !!item &&
+          typeof item.id === "number" &&
+          Number.isFinite(item.id)
+      )
+    : [];
+  if (!categoryBranch.length) {
+    return "Category branch is required.";
+  }
+
+  const firstLeaf = categoryBranch.find((item) => item.is_leaf === true);
+  if (!firstLeaf) {
+    return "Category branch must include at least one leaf node.";
+  }
+  if (!categoryIds.includes(firstLeaf.id)) {
+    return "The first leaf category must exist in selected category IDs.";
+  }
+
+  if (typeof payload.title !== "string" || !payload.title.trim().length) {
+    return "Title is required.";
+  }
+
+  const currency = typeof payload.currency === "string" ? payload.currency.trim() : "";
+  if (!/^[A-Z]{3}$/.test(currency)) {
+    return "Currency must be a 3-letter uppercase code.";
+  }
+
+  const price = typeof payload.price === "string" ? payload.price.trim() : "";
+  const parsedPrice = Number(price);
+  if (!price.length || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+    return "Price must be a positive numeric string.";
+  }
+
+  const mainImages = Array.isArray(payload.images)
+    ? payload.images.filter((item): item is string => typeof item === "string")
+    : [];
+  const variationImages = Array.isArray(payload.variations)
+    ? payload.variations.flatMap((variation) =>
+        Array.isArray(variation?.images)
+          ? variation.images.filter((item): item is string => typeof item === "string")
+          : []
+      )
+    : [];
+  const imageUrls = uniqueStringArray([...mainImages, ...variationImages]);
+  const usableImageUrls = imageUrls.filter(isUsableImageUrl);
+  if (!usableImageUrls.length) {
+    return "At least one usable image URL is required.";
+  }
+
+  if (Array.isArray(payload.variations)) {
+    const seenPositions = new Set<number>();
+    for (const variation of payload.variations) {
+      const position = toFiniteNumber(variation?.position);
+      if (position == null) {
+        return "Each variation must have a numeric position.";
+      }
+      if (seenPositions.has(position)) {
+        return "Variation positions cannot be duplicated.";
+      }
+      seenPositions.add(position);
+    }
+  }
+
+  if (!payload.main_image_ref || typeof payload.main_image_ref !== "object") {
+    return "Main image reference is required.";
+  }
+
+  const mainContainer = payload.main_image_ref.container;
+  if (mainContainer !== "main" && mainContainer !== "variation") {
+    return "Main image container must be main or variation.";
+  }
+
+  const mainImageUrl =
+    typeof payload.main_image_ref.url === "string"
+      ? payload.main_image_ref.url.trim()
+      : "";
+  if (!mainImageUrl.length) {
+    return "Main image URL is required.";
+  }
+  if (!imageUrls.includes(mainImageUrl)) {
+    return "Main image URL must exist in images or variation images.";
+  }
+
+  if (
+    mainContainer === "variation" &&
+    toFiniteNumber(payload.main_image_ref.variation_position) == null
+  ) {
+    return "Main image variation position is required when container is variation.";
+  }
+
+  if (payload.status != null && payload.status !== "READY_FOR_REVIEW") {
+    return "Status must be READY_FOR_REVIEW when provided.";
+  }
+
+  return null;
 }
 
 function statusLabel(status: ProductDraftStatus): string {
@@ -1809,12 +1973,22 @@ export function AiProductDraftShow() {
     }
     setIsPublishing(true);
     try {
-      const finalPayload = await toPayload(editState, draft?.status ?? null, draft?.draft?.url);
-      finalPayload.visibility = publishVisibility;
-      const result = await publishProductDraft(draftId, {
+      const finalPayload = await toPayload(editState, "READY_FOR_REVIEW", draft?.draft?.url);
+      const publishPayload = {
+        ...finalPayload,
         draft_id: draftId,
-        final_payload: finalPayload,
-      });
+        visibility: publishVisibility,
+      };
+      const validationError = validatePublishPayload(draftId, publishPayload);
+      if (validationError) {
+        open?.({
+          type: "error",
+          message: "Publish validation failed",
+          description: validationError,
+        });
+        return;
+      }
+      const result = await publishProductDraft(draftId, publishPayload);
       const publishedVisibility =
         typeof result.visibility === "boolean" ? result.visibility : publishVisibility;
       open?.({
@@ -2069,7 +2243,6 @@ export function AiProductDraftShow() {
                             isPublishing ||
                             isRejecting ||
                             isSaving ||
-                            !!editState?.isDirty ||
                             publishBlockedByCategory
                           }
                         >
