@@ -1,5 +1,4 @@
 import { Authenticated, Refine } from "@refinedev/core";
-import { DevtoolsPanel, DevtoolsProvider } from "@refinedev/devtools";
 import { RefineKbar, RefineKbarProvider } from "@refinedev/kbar";
 
 import routerProvider, {
@@ -67,90 +66,87 @@ function App() {
       <AuthTokenBridge />
       <RefineKbarProvider>
         <ThemeProvider>
-          <DevtoolsProvider>
-            <Refine
-              dataProvider={dataProvider("https://api.fake-rest.refine.dev")}
-              notificationProvider={useNotificationProvider()}
-              routerProvider={routerProvider}
-              authProvider={authProvider}
-              resources={[
-                {
-                  name: "blog_posts",
-                  list: "/blog-posts",
-                  create: "/blog-posts/create",
-                  edit: "/blog-posts/edit/:id",
-                  show: "/blog-posts/show/:id",
-                  meta: {
-                    canDelete: true,
-                  },
+          <Refine
+            dataProvider={dataProvider("https://api.fake-rest.refine.dev")}
+            notificationProvider={useNotificationProvider()}
+            routerProvider={routerProvider}
+            authProvider={authProvider}
+            resources={[
+              {
+                name: "blog_posts",
+                list: "/blog-posts",
+                create: "/blog-posts/create",
+                edit: "/blog-posts/edit/:id",
+                show: "/blog-posts/show/:id",
+                meta: {
+                  canDelete: true,
                 },
-                {
-                  name: "categories",
-                  list: "/categories",
-                  create: "/categories/create",
-                  edit: "/categories/edit/:id",
-                  show: "/categories/show/:id",
-                  meta: {
-                    canDelete: true,
-                  },
+              },
+              {
+                name: "categories",
+                list: "/categories",
+                create: "/categories/create",
+                edit: "/categories/edit/:id",
+                show: "/categories/show/:id",
+                meta: {
+                  canDelete: true,
                 },
-                {
-                  name: "ai_product_drafts",
-                  list: "/products/ai-import",
-                  meta: {
-                    label: "AI Import",
-                    icon: <Sparkles className="h-4 w-4" />,
-                  },
+              },
+              {
+                name: "ai_product_drafts",
+                list: "/products/ai-import",
+                meta: {
+                  label: "AI Import",
+                  icon: <Sparkles className="h-4 w-4" />,
                 },
-              ]}
-              options={{
-                syncWithLocation: true,
-                warnWhenUnsavedChanges: true,
-                projectId: "x3b9Ua-yIONaz-rV1zQj",
-              }}
-            >
-              <Routes>
-                <Route path="/login/*" element={<Login />} />
+              },
+            ]}
+            options={{
+              syncWithLocation: true,
+              warnWhenUnsavedChanges: true,
+              projectId: "x3b9Ua-yIONaz-rV1zQj",
+            }}
+          >
+            <Routes>
+              <Route path="/login/*" element={<Login />} />
+              <Route
+                element={
+                  <Authenticated key="protected" redirectOnFail="/login">
+                    <Layout>
+                      <Outlet />
+                    </Layout>
+                  </Authenticated>
+                }
+              >
                 <Route
-                  element={
-                    <Authenticated key="protected" redirectOnFail="/login">
-                      <Layout>
-                        <Outlet />
-                      </Layout>
-                    </Authenticated>
-                  }
-                >
-                  <Route
-                    index
-                    element={<NavigateToResource resource="blog_posts" />}
-                  />
-                  <Route path="/blog-posts">
-                    <Route index element={<BlogPostList />} />
-                    <Route path="create" element={<BlogPostCreate />} />
-                    <Route path="edit/:id" element={<BlogPostEdit />} />
-                    <Route path="show/:id" element={<BlogPostShow />} />
-                  </Route>
-                  <Route path="/categories">
-                    <Route index element={<CategoryList />} />
-                    <Route path="create" element={<CategoryCreate />} />
-                    <Route path="edit/:id" element={<CategoryEdit />} />
-                    <Route path="show/:id" element={<CategoryShow />} />
-                  </Route>
-                  <Route path="/products">
-                    <Route path="ai-import" element={<AiProductDraftCreate />} />
-                    <Route path="ai-import/:id" element={<AiProductDraftShow />} />
-                  </Route>
-                  <Route path="*" element={<ErrorComponent />} />
+                  index
+                  element={<NavigateToResource resource="blog_posts" />}
+                />
+                <Route path="/blog-posts">
+                  <Route index element={<BlogPostList />} />
+                  <Route path="create" element={<BlogPostCreate />} />
+                  <Route path="edit/:id" element={<BlogPostEdit />} />
+                  <Route path="show/:id" element={<BlogPostShow />} />
                 </Route>
-              </Routes>
+                <Route path="/categories">
+                  <Route index element={<CategoryList />} />
+                  <Route path="create" element={<CategoryCreate />} />
+                  <Route path="edit/:id" element={<CategoryEdit />} />
+                  <Route path="show/:id" element={<CategoryShow />} />
+                </Route>
+                <Route path="/products">
+                  <Route path="ai-import" element={<AiProductDraftCreate />} />
+                  <Route path="ai-import/:id" element={<AiProductDraftShow />} />
+                </Route>
+                <Route path="*" element={<ErrorComponent />} />
+              </Route>
+            </Routes>
 
-              <Toaster />
-              <RefineKbar />
-              <UnsavedChangesNotifier />
-              <DocumentTitleHandler />
-            </Refine>
-            <DevtoolsPanel />
-          </DevtoolsProvider>
+            <Toaster />
+            <RefineKbar />
+            <UnsavedChangesNotifier />
+            <DocumentTitleHandler />
+          </Refine>
         </ThemeProvider>
       </RefineKbarProvider>
     </BrowserRouter>
