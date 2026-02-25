@@ -285,7 +285,7 @@ export function AiProductDraftList() {
                 {isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 Refresh
               </Button>
-              <Button onClick={() => navigate("/products/ai-import/create")}>
+              <Button onClick={() => navigate("/products/ai-import")}>
                 <SquarePen className="h-4 w-4" />
                 New Draft
               </Button>
@@ -403,7 +403,7 @@ export function AiProductDraftList() {
                       <TableRow
                         key={item.id}
                         className="cursor-pointer"
-                        onClick={() => navigate(`/products/ai-import/${item.id}`)}
+                        onClick={() => navigate(`/products/drafts/${item.id}`)}
                       >
                         <TableCell>
                           <Badge
@@ -432,7 +432,7 @@ export function AiProductDraftList() {
                           >
                             <Button
                               size="sm"
-                              onClick={() => navigate(`/products/ai-import/${item.id}`)}
+                              onClick={() => navigate(`/products/drafts/${item.id}`)}
                             >
                               Review
                             </Button>
@@ -478,7 +478,7 @@ export function AiProductDraftList() {
                     Clear filters
                   </Button>
                 ) : null}
-                <Button onClick={() => navigate("/products/ai-import/create")}>
+                <Button onClick={() => navigate("/products/ai-import")}>
                   New Draft
                 </Button>
               </div>

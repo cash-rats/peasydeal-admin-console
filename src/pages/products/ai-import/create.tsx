@@ -53,7 +53,7 @@ export function AiProductDraftCreate() {
         description: `Draft ID: ${result.id}`,
       });
 
-      navigate(`/products/ai-import/${result.id}`);
+      navigate(`/products/drafts/${result.id}`);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown error";
       setError(message);

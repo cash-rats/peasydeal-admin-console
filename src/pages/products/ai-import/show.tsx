@@ -2095,7 +2095,7 @@ export function AiProductDraftShow() {
 
   return (
     <ListView>
-      <ListViewHeader title="AI Import" canCreate={false} />
+      <ListViewHeader title="Product Drafts" canCreate={false} />
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-4">
           <div className="flex flex-col gap-1">
@@ -2106,7 +2106,7 @@ export function AiProductDraftShow() {
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
-              onClick={() => navigate("/products/ai-import/create")}
+              onClick={() => navigate("/products/ai-import")}
             >
               New draft
             </Button>

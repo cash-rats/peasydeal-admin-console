@@ -9,14 +9,14 @@ import routerProvider, {
 import dataProvider from "@refinedev/simple-rest";
 import { useAuth } from "@clerk/clerk-react";
 import React from "react";
-import { BrowserRouter, Outlet, Route, Routes } from "react-router";
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useParams } from "react-router";
 import "./App.css";
 import { ErrorComponent } from "./components/refine-ui/layout/error-component";
 import { Layout } from "./components/refine-ui/layout/layout";
 import { Toaster } from "./components/refine-ui/notification/toaster";
 import { useNotificationProvider } from "./components/refine-ui/notification/use-notification-provider";
 import { ThemeProvider } from "./components/refine-ui/theme/theme-provider";
-import { Sparkles } from "lucide-react";
+import { FileText, Sparkles } from "lucide-react";
 import {
   BlogPostCreate,
   BlogPostEdit,
@@ -62,6 +62,17 @@ function useClerkAuthProvider() {
   );
 }
 
+function LegacyAiImportDraftRedirect() {
+  const params = useParams();
+  const draftId = params.id;
+
+  if (!draftId) {
+    return <Navigate to="/products/drafts" replace />;
+  }
+
+  return <Navigate to={`/products/drafts/${draftId}`} replace />;
+}
+
 function App() {
   const authProvider = useClerkAuthProvider();
 
@@ -97,9 +108,17 @@ function App() {
                 },
               },
               {
-                name: "ai_product_drafts",
+                name: "product_drafts",
+                list: "/products/drafts",
+                show: "/products/drafts/:id",
+                meta: {
+                  label: "Product Drafts",
+                  icon: <FileText className="h-4 w-4" />,
+                },
+              },
+              {
+                name: "ai_import",
                 list: "/products/ai-import",
-                create: "/products/ai-import/create",
                 meta: {
                   label: "AI Import",
                   icon: <Sparkles className="h-4 w-4" />,
@@ -140,9 +159,14 @@ function App() {
                   <Route path="show/:id" element={<CategoryShow />} />
                 </Route>
                 <Route path="/products">
-                  <Route path="ai-import" element={<AiProductDraftList />} />
-                  <Route path="ai-import/create" element={<AiProductDraftCreate />} />
-                  <Route path="ai-import/:id" element={<AiProductDraftShow />} />
+                  <Route path="ai-import" element={<AiProductDraftCreate />} />
+                  <Route
+                    path="ai-import/create"
+                    element={<Navigate to="/products/ai-import" replace />}
+                  />
+                  <Route path="ai-import/:id" element={<LegacyAiImportDraftRedirect />} />
+                  <Route path="drafts" element={<AiProductDraftList />} />
+                  <Route path="drafts/:id" element={<AiProductDraftShow />} />
                 </Route>
                 <Route path="*" element={<ErrorComponent />} />
               </Route>
