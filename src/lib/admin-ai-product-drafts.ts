@@ -84,6 +84,25 @@ export type ProductDraft = {
   published_product_id: string | null;
 };
 
+export type ProductDraftListItem = {
+  id: string;
+  status: ProductDraftStatus;
+  url: string | null;
+  updated_at_ms: number;
+};
+
+export type ListProductDraftsQuery = {
+  status?: ProductDraftStatus;
+  q?: string;
+  limit?: number;
+  cursor?: string;
+};
+
+export type ListProductDraftsResponse = {
+  items: ProductDraftListItem[];
+  next_cursor: string | null;
+};
+
 export type CreateDraftRequest = {
   url: string;
 };
@@ -142,6 +161,89 @@ export async function getProductDraft(draftId: string): Promise<ProductDraft> {
   }
 
   return response.json();
+}
+
+function isProductDraftStatus(value: unknown): value is ProductDraftStatus {
+  return (
+    value === "FOUND" ||
+    value === "QUEUED_FOR_DRAFT" ||
+    value === "CRAWLING" ||
+    value === "DRAFTING" ||
+    value === "READY_FOR_REVIEW" ||
+    value === "PUBLISHED" ||
+    value === "FAILED" ||
+    value === "REJECTED"
+  );
+}
+
+function toEpochMs(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const asNumber = Number(value);
+    if (Number.isFinite(asNumber)) return asNumber;
+    const asDateMs = Date.parse(value);
+    if (Number.isFinite(asDateMs)) return asDateMs;
+  }
+  return 0;
+}
+
+export async function listProductDrafts(
+  query: ListProductDraftsQuery = {}
+): Promise<ListProductDraftsResponse> {
+  const params = new URLSearchParams();
+
+  if (query.status) params.set("status", query.status);
+  if (query.q?.trim()) params.set("q", query.q.trim());
+  if (typeof query.limit === "number" && Number.isFinite(query.limit)) {
+    params.set("limit", String(Math.max(1, Math.floor(query.limit))));
+  }
+  if (query.cursor?.trim()) params.set("cursor", query.cursor.trim());
+
+  const search = params.toString();
+  const response = await apiFetch(
+    withApiBaseUrl(`/v1/admin/product-drafts${search ? `?${search}` : ""}`),
+    { method: "GET" }
+  );
+
+  if (!response.ok) {
+    throw new Error(await parseApiErrorMessage(response, "Failed to load draft list"));
+  }
+
+  const payload = (await response.json().catch(() => null)) as
+    | {
+        items?: unknown[];
+        next_cursor?: unknown;
+      }
+    | null;
+
+  const items = Array.isArray(payload?.items)
+    ? payload.items
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const record = item as Record<string, unknown>;
+          const id = typeof record.id === "string" ? record.id : "";
+          const status = isProductDraftStatus(record.status)
+            ? record.status
+            : "QUEUED_FOR_DRAFT";
+          const updated_at_ms = toEpochMs(record.updated_at_ms ?? record.updated_at);
+
+          if (!id) return null;
+          return {
+            id,
+            status,
+            url: typeof record.url === "string" ? record.url : null,
+            updated_at_ms,
+          } satisfies ProductDraftListItem;
+        })
+        .filter((item): item is ProductDraftListItem => item !== null)
+    : [];
+
+  return {
+    items,
+    next_cursor: typeof payload?.next_cursor === "string" ? payload.next_cursor : null,
+  };
 }
 
 export async function searchCategoryTaxonomy(

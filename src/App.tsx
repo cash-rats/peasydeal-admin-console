@@ -29,7 +29,11 @@ import {
   CategoryList,
   CategoryShow,
 } from "./pages/categories";
-import { AiProductDraftCreate, AiProductDraftShow } from "./pages/products/ai-import";
+import {
+  AiProductDraftCreate,
+  AiProductDraftList,
+  AiProductDraftShow,
+} from "./pages/products/ai-import";
 import { Login } from "./pages/login";
 import { createAuthProvider } from "./auth-provider";
 import { setAuthTokenProvider } from "./lib/auth-token";
@@ -95,6 +99,7 @@ function App() {
               {
                 name: "ai_product_drafts",
                 list: "/products/ai-import",
+                create: "/products/ai-import/create",
                 meta: {
                   label: "AI Import",
                   icon: <Sparkles className="h-4 w-4" />,
@@ -135,7 +140,8 @@ function App() {
                   <Route path="show/:id" element={<CategoryShow />} />
                 </Route>
                 <Route path="/products">
-                  <Route path="ai-import" element={<AiProductDraftCreate />} />
+                  <Route path="ai-import" element={<AiProductDraftList />} />
+                  <Route path="ai-import/create" element={<AiProductDraftCreate />} />
                   <Route path="ai-import/:id" element={<AiProductDraftShow />} />
                 </Route>
                 <Route path="*" element={<ErrorComponent />} />

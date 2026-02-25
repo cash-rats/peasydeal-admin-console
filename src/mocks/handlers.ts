@@ -57,7 +57,7 @@ function ensurePayload(draft: StoredDraft): StoredDraft {
 }
 
 export const handlers = [
-  http.post("*/v1/crawl/enqueue", async ({ request }) => {
+  http.post("*/v1/admin/crawl/enqueue", async ({ request }) => {
     const body = (await request.json().catch(() => null)) as
       | { url?: string }
       | null;
@@ -87,7 +87,7 @@ export const handlers = [
     return HttpResponse.json({ ok: true, id });
   }),
 
-  http.get("*/v1/product-drafts/:draftId", ({ params }) => {
+  http.get("*/v1/admin/product-drafts/:draftId", ({ params }) => {
     const draftId = String((params as Record<string, string>).draftId);
     const stored = drafts.get(draftId);
     if (!stored) {
@@ -118,7 +118,7 @@ export const handlers = [
     return HttpResponse.json(nextDraft);
   }),
 
-  http.get("*/v1/product-drafts", ({ request }) => {
+  http.get("*/v1/admin/product-drafts", ({ request }) => {
     const url = new URL(request.url);
     const statusFilter = url.searchParams.get("status");
     const items = Array.from(drafts.values())
@@ -219,7 +219,7 @@ export const handlers = [
     });
   }),
 
-  http.patch("*/v1/product-drafts/:draftId", async ({ params, request }) => {
+  http.put("*/v1/admin/product-drafts/:draftId", async ({ params, request }) => {
     const draftId = String((params as Record<string, string>).draftId);
     const stored = drafts.get(draftId);
     if (!stored) {

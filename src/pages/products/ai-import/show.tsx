@@ -2106,7 +2106,7 @@ export function AiProductDraftShow() {
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
-              onClick={() => navigate("/products/ai-import")}
+              onClick={() => navigate("/products/ai-import/create")}
             >
               New draft
             </Button>
