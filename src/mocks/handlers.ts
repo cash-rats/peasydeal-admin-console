@@ -338,6 +338,15 @@ export const handlers = [
     });
   }),
 
+  http.delete("*/v1/admin/product-drafts/:draftId", ({ params }) => {
+    const draftId = String((params as Record<string, string>).draftId);
+    const existed = drafts.delete(draftId);
+    if (!existed) {
+      return HttpResponse.json({ message: "Not found" }, { status: 404 });
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
+
   http.put("*/v1/admin/product-drafts/:draftId", async ({ params, request }) => {
     const draftId = String((params as Record<string, string>).draftId);
     const stored = drafts.get(draftId);

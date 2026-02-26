@@ -305,6 +305,27 @@ export async function updateProductDraft(
   return response.json();
 }
 
+export async function deleteProductDraft(
+  draftId: string
+): Promise<{ draft_id?: string; deleted?: boolean } | null> {
+  const response = await apiFetch(
+    withApiBaseUrl(`/v1/admin/product-drafts/${draftId}`),
+    {
+      method: "DELETE",
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(await parseApiErrorMessage(response, "Failed to delete draft"));
+  }
+
+  if (response.status === 204) {
+    return null;
+  }
+
+  return response.json().catch(() => null);
+}
+
 export type PublishProductDraftRequest = {
   draft_id: string;
 } & ProductDraftPayload;

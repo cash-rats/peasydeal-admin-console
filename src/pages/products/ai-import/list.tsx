@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  deleteProductDraft,
   listProductDrafts,
   type ProductDraftListItem,
   type ProductDraftStatus,
@@ -73,7 +74,7 @@ type DraftCacheAction =
   | { type: "fetch_start"; mode: "initial" | "refresh" }
   | { type: "upsert_page"; items: ProductDraftListItem[] }
   | { type: "prune_missing"; ids: string[] }
-  | { type: "remove_local"; id: string }
+  | { type: "remove_item"; id: string }
   | { type: "fetch_success"; fetchedAtMs: number }
   | { type: "fetch_error"; message: string };
 
@@ -136,7 +137,7 @@ function draftCacheReducer(state: DraftCacheState, action: DraftCacheAction): Dr
         orderedIds: sortIdsByUpdatedAt(nextEntitiesById),
       };
     }
-    case "remove_local": {
+    case "remove_item": {
       if (!state.entitiesById[action.id]) {
         return {
           ...state,
@@ -393,18 +394,27 @@ export function AiProductDraftList() {
     if (!draftIdToDelete) return;
     setIsDeletingDraftId(draftIdToDelete);
 
-    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    try {
+      await deleteProductDraft(draftIdToDelete);
+      dispatch({ type: "remove_item", id: draftIdToDelete });
+      open?.({
+        type: "success",
+        message: "Draft deleted",
+        description: `${draftIdToDelete} was deleted.`,
+      });
 
-    dispatch({ type: "remove_local", id: draftIdToDelete });
-    open?.({
-      type: "success",
-      message: "Draft hidden locally",
-      description: `${draftIdToDelete} is removed from this list (UI-only; not synced to backend).`,
-    });
-
-    setIsDeletingDraftId(null);
-    setDeleteDialogOpen(false);
-    setDraftIdToDelete(null);
+      setDeleteDialogOpen(false);
+      setDraftIdToDelete(null);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to delete draft";
+      open?.({
+        type: "error",
+        message: "Delete failed",
+        description: message,
+      });
+    } finally {
+      setIsDeletingDraftId(null);
+    }
   }, [draftIdToDelete, open]);
 
   return (
@@ -683,13 +693,13 @@ export function AiProductDraftList() {
             <AlertDialogDescription>
               {draftIdToDelete ? (
                 <>
-                  Draft <span className="font-mono">{draftIdToDelete}</span> will be hidden from this
+                  Draft <span className="font-mono">{draftIdToDelete}</span> will be deleted from this
                   list.
                 </>
               ) : (
-                "This draft will be hidden from this list."
+                "This draft will be deleted from this list."
               )}{" "}
-              This is UI-only and will not delete backend data.
+              This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
