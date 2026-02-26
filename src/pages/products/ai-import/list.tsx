@@ -1,8 +1,19 @@
 import React from "react";
 import { useNavigate } from "react-router";
+import { useNotification } from "@refinedev/core";
 
 import { ListView, ListViewHeader } from "@/components/refine-ui/views/list-view";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,7 +39,7 @@ import {
   type ProductDraftStatus,
 } from "@/lib/admin-ai-product-drafts";
 import { cn } from "@/lib/utils";
-import { ExternalLink, ImageOff, Loader2, Search, SquarePen } from "lucide-react";
+import { ExternalLink, ImageOff, Loader2, Search, SquarePen, Trash2 } from "lucide-react";
 
 type DraftListTab =
   | "ALL"
@@ -50,6 +61,7 @@ const TAB_ITEMS: Array<{ value: DraftListTab; label: string }> = [
 type DraftCacheState = {
   entitiesById: Record<string, ProductDraftListItem>;
   orderedIds: string[];
+  locallyHiddenIds: Record<string, true>;
   isBootstrapping: boolean;
   isFetching: boolean;
   isRefreshing: boolean;
@@ -61,12 +73,14 @@ type DraftCacheAction =
   | { type: "fetch_start"; mode: "initial" | "refresh" }
   | { type: "upsert_page"; items: ProductDraftListItem[] }
   | { type: "prune_missing"; ids: string[] }
+  | { type: "remove_local"; id: string }
   | { type: "fetch_success"; fetchedAtMs: number }
   | { type: "fetch_error"; message: string };
 
 const initialDraftCacheState: DraftCacheState = {
   entitiesById: {},
   orderedIds: [],
+  locallyHiddenIds: {},
   isBootstrapping: true,
   isFetching: false,
   isRefreshing: false,
@@ -97,6 +111,7 @@ function draftCacheReducer(state: DraftCacheState, action: DraftCacheAction): Dr
 
       const nextEntitiesById = { ...state.entitiesById };
       for (const item of action.items) {
+        if (state.locallyHiddenIds[item.id]) continue;
         nextEntitiesById[item.id] = item;
       }
 
@@ -119,6 +134,30 @@ function draftCacheReducer(state: DraftCacheState, action: DraftCacheAction): Dr
         ...state,
         entitiesById: nextEntitiesById,
         orderedIds: sortIdsByUpdatedAt(nextEntitiesById),
+      };
+    }
+    case "remove_local": {
+      if (!state.entitiesById[action.id]) {
+        return {
+          ...state,
+          locallyHiddenIds: {
+            ...state.locallyHiddenIds,
+            [action.id]: true,
+          },
+        };
+      }
+
+      const nextEntitiesById = { ...state.entitiesById };
+      delete nextEntitiesById[action.id];
+
+      return {
+        ...state,
+        entitiesById: nextEntitiesById,
+        orderedIds: state.orderedIds.filter((id) => id !== action.id),
+        locallyHiddenIds: {
+          ...state.locallyHiddenIds,
+          [action.id]: true,
+        },
       };
     }
     case "fetch_success":
@@ -252,6 +291,7 @@ function matchesSearchTerm(item: ProductDraftListItem, searchTerm: string): bool
 
 export function AiProductDraftList() {
   const navigate = useNavigate();
+  const { open } = useNotification();
   const requestIdRef = React.useRef(0);
 
   const [cacheState, dispatch] = React.useReducer(
@@ -261,6 +301,9 @@ export function AiProductDraftList() {
   const [activeTab, setActiveTab] = React.useState<DraftListTab>("ALL");
   const [searchInput, setSearchInput] = React.useState("");
   const [searchTerm, setSearchTerm] = React.useState("");
+  const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false);
+  const [draftIdToDelete, setDraftIdToDelete] = React.useState<string | null>(null);
+  const [isDeletingDraftId, setIsDeletingDraftId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -340,6 +383,29 @@ export function AiProductDraftList() {
   const isInitialLoading = cacheState.isBootstrapping && allItems.length === 0;
   const isEmpty = !isInitialLoading && rows.length === 0;
   const isRefreshDisabled = cacheState.isFetching;
+
+  const onDeleteClick = React.useCallback((draftId: string) => {
+    setDraftIdToDelete(draftId);
+    setDeleteDialogOpen(true);
+  }, []);
+
+  const onConfirmDelete = React.useCallback(async () => {
+    if (!draftIdToDelete) return;
+    setIsDeletingDraftId(draftIdToDelete);
+
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+
+    dispatch({ type: "remove_local", id: draftIdToDelete });
+    open?.({
+      type: "success",
+      message: "Draft hidden locally",
+      description: `${draftIdToDelete} is removed from this list (UI-only; not synced to backend).`,
+    });
+
+    setIsDeletingDraftId(null);
+    setDeleteDialogOpen(false);
+    setDraftIdToDelete(null);
+  }, [draftIdToDelete, open]);
 
   return (
     <ListView>
@@ -551,6 +617,20 @@ export function AiProductDraftList() {
                                 Source
                               </Button>
                             )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => onDeleteClick(item.id)}
+                              disabled={isDeletingDraftId !== null}
+                            >
+                              {isDeletingDraftId === item.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                              Delete
+                            </Button>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -588,6 +668,52 @@ export function AiProductDraftList() {
           ) : null}
         </CardContent>
       </Card>
+
+      <AlertDialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          if (isDeletingDraftId) return;
+          setDeleteDialogOpen(open);
+          if (!open) setDraftIdToDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete draft?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {draftIdToDelete ? (
+                <>
+                  Draft <span className="font-mono">{draftIdToDelete}</span> will be hidden from this
+                  list.
+                </>
+              ) : (
+                "This draft will be hidden from this list."
+              )}{" "}
+              This is UI-only and will not delete backend data.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(isDeletingDraftId)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                void onConfirmDelete();
+              }}
+              disabled={Boolean(isDeletingDraftId) || !draftIdToDelete}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              {isDeletingDraftId ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </ListView>
   );
 }
