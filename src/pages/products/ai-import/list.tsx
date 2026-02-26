@@ -219,12 +219,19 @@ function filterItemsByTab(items: ProductDraftListItem[], tab: DraftListTab) {
   }
 }
 
-function getDomain(rawUrl: string | null): string {
+function getSourceType(rawUrl: string | null): "taobao" | "shopee" | "other" | "—" {
   if (!rawUrl) return "—";
   try {
-    return new URL(rawUrl).hostname;
+    const hostname = new URL(rawUrl).hostname.toLowerCase();
+    if (hostname.includes("taobao.com") || hostname.includes("tmall.com")) {
+      return "taobao";
+    }
+    if (hostname.includes("shopee.")) {
+      return "shopee";
+    }
+    return "other";
   } catch {
-    return "—";
+    return "other";
   }
 }
 
@@ -456,8 +463,8 @@ export function AiProductDraftList() {
                 <TableRow>
                   <TableHead className="w-[84px]">Preview</TableHead>
                   <TableHead className="w-[180px]">Status</TableHead>
-                  <TableHead>Draft ID</TableHead>
-                  <TableHead>Source</TableHead>
+                  <TableHead className="w-[170px]">Draft ID</TableHead>
+                  <TableHead className="w-[120px]">Source Type</TableHead>
                   <TableHead className="w-[200px]">Updated</TableHead>
                   <TableHead className="w-[210px]">Actions</TableHead>
                 </TableRow>
@@ -503,16 +510,16 @@ export function AiProductDraftList() {
                             {statusLabel(item.status)}
                           </Badge>
                         </TableCell>
-                        <TableCell className="font-mono text-xs">{item.id}</TableCell>
+                        <TableCell
+                          className="max-w-[170px] truncate font-mono text-[11px]"
+                          title={item.id}
+                        >
+                          {item.id}
+                        </TableCell>
                         <TableCell>
-                          <div className="flex flex-col gap-0.5">
-                            <span className="text-xs text-muted-foreground">
-                              {getDomain(item.url)}
-                            </span>
-                            <span className="max-w-[440px] truncate text-sm" title={item.url ?? ""}>
-                              {item.url ?? "—"}
-                            </span>
-                          </div>
+                          <span className="font-medium lowercase">
+                            {getSourceType(item.url)}
+                          </span>
                         </TableCell>
                         <TableCell>{formatUpdatedAt(item.updated_at_ms)}</TableCell>
                         <TableCell>
@@ -528,7 +535,12 @@ export function AiProductDraftList() {
                             </Button>
                             {item.url ? (
                               <Button size="sm" variant="ghost" asChild>
-                                <a href={item.url} target="_blank" rel="noreferrer">
+                                <a
+                                  href={item.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={item.url}
+                                >
                                   <ExternalLink className="h-4 w-4" />
                                   Source
                                 </a>
