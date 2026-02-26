@@ -24,6 +24,7 @@ import React from "react";
 import { useNavigate, useParams } from "react-router";
 
 import {
+  deleteProductDraft,
   getProductDraft,
   isTerminalStatus,
   publishProductDraft,
@@ -37,6 +38,16 @@ import {
 } from "@/lib/admin-ai-product-drafts";
 import { canonicalizeProductUrl } from "@/lib/canonicalize-product-url";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -55,7 +66,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ListView, ListViewHeader } from "@/components/refine-ui/views/list-view";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { GripVertical, ImagePlus, Loader2, X } from "lucide-react";
+import { GripVertical, ImagePlus, Loader2, Trash2, X } from "lucide-react";
 
 type EditSnapshot = {
   categoryIds: number[];
@@ -1656,6 +1667,8 @@ export function AiProductDraftShow() {
   const [isPublishing, setIsPublishing] = React.useState(false);
   const [isRejecting, setIsRejecting] = React.useState(false);
   const [isSaving, setIsSaving] = React.useState(false);
+  const [isDeleting, setIsDeleting] = React.useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
   const [publishVisibility, setPublishVisibility] = React.useState(true);
   const [activeDragType, setActiveDragType] = React.useState<DragKind>(null);
   const [variationImageUrlInputs, setVariationImageUrlInputs] = React.useState<
@@ -2044,6 +2057,26 @@ export function AiProductDraftShow() {
     }
   };
 
+  const onDelete = async () => {
+    if (!draftId) return;
+    setIsDeleting(true);
+    try {
+      await deleteProductDraft(draftId);
+      open?.({
+        type: "success",
+        message: "Draft deleted",
+        description: `${draftId} was deleted.`,
+      });
+      setIsDeleteDialogOpen(false);
+      navigate("/products/drafts", { replace: true });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown error";
+      open?.({ type: "error", message: "Delete failed", description: message });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const onSelectCategoryCandidate = (candidate: CategoryTaxonomyCandidate) => {
     const branch: CategoryBranchItem[] = candidate.branch
       .map((node, index, all) => ({
@@ -2107,11 +2140,20 @@ export function AiProductDraftShow() {
             <Button
               variant="outline"
               onClick={() => navigate("/products/ai-import")}
+              disabled={isDeleting}
             >
               New draft
             </Button>
-            <Button variant="outline" onClick={() => void refresh()}>
+            <Button variant="outline" onClick={() => void refresh()} disabled={isDeleting}>
               Refresh
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => setIsDeleteDialogOpen(true)}
+              disabled={isDeleting || isLoading || !draft}
+            >
+              {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              Delete Draft
             </Button>
           </div>
         </CardHeader>
@@ -2205,7 +2247,7 @@ export function AiProductDraftShow() {
                                 checked === "indeterminate" ? true : checked
                               )
                             }
-                            disabled={isPublishing || isRejecting || isSaving}
+                            disabled={isPublishing || isRejecting || isSaving || isDeleting}
                           />
                           <div className="flex flex-col">
                             <Label htmlFor="publish-visibility" className="leading-none">
@@ -2226,14 +2268,14 @@ export function AiProductDraftShow() {
                               return createEditState(editSnapshotRef.current as EditSnapshot);
                             });
                           }}
-                          disabled={!editState || !editState.isDirty}
+                          disabled={!editState || !editState.isDirty || isDeleting}
                         >
                           Reset
                         </Button>
                         <Button
                           variant="secondary"
                           onClick={() => void onSave()}
-                          disabled={!editState || !editState.isDirty || isSaving}
+                          disabled={!editState || !editState.isDirty || isSaving || isDeleting}
                         >
                           {isSaving ? "Saving..." : "Save changes"}
                         </Button>
@@ -2243,6 +2285,7 @@ export function AiProductDraftShow() {
                             isPublishing ||
                             isRejecting ||
                             isSaving ||
+                            isDeleting ||
                             publishBlockedByCategory
                           }
                         >
@@ -2251,7 +2294,7 @@ export function AiProductDraftShow() {
                         <Button
                           variant="secondary"
                           onClick={() => void onReject()}
-                          disabled={isPublishing || isRejecting}
+                          disabled={isPublishing || isRejecting || isDeleting}
                         >
                           {isRejecting ? "Rejecting..." : "Reject"}
                         </Button>
@@ -3031,6 +3074,44 @@ export function AiProductDraftShow() {
           ) : null}
         </CardContent>
       </Card>
+
+      <AlertDialog
+        open={isDeleteDialogOpen}
+        onOpenChange={(open) => {
+          if (isDeleting) return;
+          setIsDeleteDialogOpen(open);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete draft?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Draft <span className="font-mono">{draftId}</span> will be permanently deleted. This
+              action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={(event) => {
+                event.preventDefault();
+                void onDelete();
+              }}
+              disabled={isDeleting}
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </ListView>
   );
 }
