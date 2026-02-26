@@ -28,7 +28,7 @@ import {
   type ProductDraftStatus,
 } from "@/lib/admin-ai-product-drafts";
 import { cn } from "@/lib/utils";
-import { ExternalLink, Loader2, Search, SquarePen } from "lucide-react";
+import { ExternalLink, ImageOff, Loader2, Search, SquarePen } from "lucide-react";
 
 type DraftListTab =
   | "ALL"
@@ -38,6 +38,7 @@ type DraftListTab =
   | "PUBLISHED"
   | "REJECTED";
 
+const PAGE_SIZE = 10;
 const IN_PROGRESS_STATUS_SET = new Set<ProductDraftStatus>([
   "FOUND",
   "QUEUED_FOR_DRAFT",
@@ -47,7 +48,7 @@ const IN_PROGRESS_STATUS_SET = new Set<ProductDraftStatus>([
 
 const TAB_ITEMS: Array<{ value: DraftListTab; label: string }> = [
   { value: "ALL", label: "All" },
-  { value: "READY_FOR_REVIEW", label: "Ready" },
+  { value: "READY_FOR_REVIEW", label: "Ready for Review (READY_FOR_REVIEW)" },
   { value: "IN_PROGRESS", label: "In Progress" },
   { value: "FAILED", label: "Failed" },
   { value: "PUBLISHED", label: "Published" },
@@ -121,20 +122,47 @@ function isInProgressStatus(status: ProductDraftStatus): boolean {
   return IN_PROGRESS_STATUS_SET.has(status);
 }
 
-function matchTab(item: ProductDraftListItem, tab: DraftListTab): boolean {
+function toStatusFilter(tab: DraftListTab): ProductDraftStatus | undefined {
   switch (tab) {
-    case "ALL":
-      return true;
-    case "IN_PROGRESS":
-      return isInProgressStatus(item.status);
     case "READY_FOR_REVIEW":
     case "FAILED":
     case "PUBLISHED":
     case "REJECTED":
-      return item.status === tab;
+      return tab;
     default:
-      return true;
+      return undefined;
   }
+}
+
+function filterItemsByTab(items: ProductDraftListItem[], tab: DraftListTab) {
+  switch (tab) {
+    case "IN_PROGRESS":
+      return items.filter((item) => isInProgressStatus(item.status));
+    case "READY_FOR_REVIEW":
+    case "FAILED":
+    case "PUBLISHED":
+    case "REJECTED":
+      return items.filter((item) => item.status === tab);
+    case "ALL":
+    default:
+      return items;
+  }
+}
+
+function mergeById(
+  previous: ProductDraftListItem[],
+  incoming: ProductDraftListItem[]
+): ProductDraftListItem[] {
+  const next = [...previous];
+  for (const item of incoming) {
+    const index = next.findIndex((current) => current.id === item.id);
+    if (index >= 0) {
+      next[index] = item;
+      continue;
+    }
+    next.push(item);
+  }
+  return next;
 }
 
 function getDomain(rawUrl: string | null): string {
@@ -152,21 +180,33 @@ function formatUpdatedAt(updatedAtMs: number): string {
 }
 
 function normalizeSearchTerm(value: string): string {
-  return value.trim().toLowerCase();
+  return value.trim();
 }
 
 export function AiProductDraftList() {
   const navigate = useNavigate();
   const requestIdRef = React.useRef(0);
+  const nextCursorRef = React.useRef<string | null>(null);
 
   const [rows, setRows] = React.useState<ProductDraftListItem[]>([]);
+  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
   const [activeTab, setActiveTab] = React.useState<DraftListTab>("ALL");
   const [searchInput, setSearchInput] = React.useState("");
   const [searchTerm, setSearchTerm] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(true);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
+  const [isLoadingMore, setIsLoadingMore] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [lastSyncedAtMs, setLastSyncedAtMs] = React.useState<number | null>(null);
+
+  const statusFilter = React.useMemo(
+    () => toStatusFilter(activeTab),
+    [activeTab]
+  );
+
+  React.useEffect(() => {
+    nextCursorRef.current = nextCursor;
+  }, [nextCursor]);
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -175,91 +215,85 @@ export function AiProductDraftList() {
     return () => window.clearTimeout(timer);
   }, [searchInput]);
 
-  const refresh = React.useCallback(
-    async (mode: "loading" | "refresh" = "loading") => {
+  const fetchPage = React.useCallback(
+    async (mode: "initial" | "refresh" | "append") => {
+      const cursorToken = mode === "append" ? nextCursorRef.current : undefined;
+      if (mode === "append" && !cursorToken) return;
+
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
 
-      if (mode === "loading") {
-        setIsLoading(true);
-      } else {
-        setIsRefreshing(true);
-      }
+      if (mode === "initial") setIsLoading(true);
+      if (mode === "refresh") setIsRefreshing(true);
+      if (mode === "append") setIsLoadingMore(true);
 
       try {
         const response = await listProductDrafts({
-          limit: 200,
+          status: statusFilter,
           q: searchTerm.length > 0 ? searchTerm : undefined,
+          limit: PAGE_SIZE,
+          cursor: cursorToken ?? undefined,
         });
-        const sorted = [...response.items].sort((a, b) =>
-          a.updated_at_ms < b.updated_at_ms ? 1 : -1
-        );
+
         if (requestId !== requestIdRef.current) return;
-        setRows(sorted);
+
+        const filtered = filterItemsByTab(response.items, activeTab);
+        setNextCursor(response.next_cursor);
         setError(null);
         setLastSyncedAtMs(Date.now());
+
+        if (mode === "append") {
+          setRows((previous) => mergeById(previous, filtered));
+          return;
+        }
+
+        setRows(filtered);
       } catch (e) {
         if (requestId !== requestIdRef.current) return;
         const message = e instanceof Error ? e.message : "Failed to load draft list";
         setError(message);
       } finally {
         if (requestId !== requestIdRef.current) return;
-        if (mode === "loading") {
-          setIsLoading(false);
-          return;
-        }
-        setIsRefreshing(false);
+        if (mode === "initial") setIsLoading(false);
+        if (mode === "refresh") setIsRefreshing(false);
+        if (mode === "append") setIsLoadingMore(false);
       }
     },
-    [searchTerm]
+    [activeTab, searchTerm, statusFilter]
   );
 
   React.useEffect(() => {
-    void refresh("loading");
-  }, [refresh]);
-
-  const rowsAfterSearch = React.useMemo(() => {
-    if (!searchTerm.length) return rows;
-    return rows.filter((item) => {
-      const idHit = item.id.toLowerCase().includes(searchTerm);
-      const urlHit = (item.url ?? "").toLowerCase().includes(searchTerm);
-      return idHit || urlHit;
-    });
-  }, [rows, searchTerm]);
-
-  const filteredRows = React.useMemo(
-    () => rowsAfterSearch.filter((item) => matchTab(item, activeTab)),
-    [activeTab, rowsAfterSearch]
-  );
+    void fetchPage("initial");
+  }, [fetchPage]);
 
   const summary = React.useMemo(
     () => ({
-      ready: rowsAfterSearch.filter((item) => item.status === "READY_FOR_REVIEW").length,
-      inProgress: rowsAfterSearch.filter((item) => isInProgressStatus(item.status)).length,
-      failed: rowsAfterSearch.filter((item) => item.status === "FAILED").length,
-      published: rowsAfterSearch.filter((item) => item.status === "PUBLISHED").length,
-      rejected: rowsAfterSearch.filter((item) => item.status === "REJECTED").length,
+      ready: rows.filter((item) => item.status === "READY_FOR_REVIEW").length,
+      inProgress: rows.filter((item) => isInProgressStatus(item.status)).length,
+      failed: rows.filter((item) => item.status === "FAILED").length,
+      published: rows.filter((item) => item.status === "PUBLISHED").length,
+      rejected: rows.filter((item) => item.status === "REJECTED").length,
     }),
-    [rowsAfterSearch]
+    [rows]
   );
 
   const hasInProgressInCurrentResult = React.useMemo(
-    () => filteredRows.some((item) => isInProgressStatus(item.status)),
-    [filteredRows]
+    () => rows.some((item) => isInProgressStatus(item.status)),
+    [rows]
   );
 
   React.useEffect(() => {
     if (!hasInProgressInCurrentResult) return;
 
     const timer = window.setInterval(() => {
-      void refresh("refresh");
+      void fetchPage("refresh");
     }, 15000);
 
     return () => window.clearInterval(timer);
-  }, [hasInProgressInCurrentResult, refresh]);
+  }, [fetchPage, hasInProgressInCurrentResult]);
 
   const isInitialLoading = isLoading && rows.length === 0;
-  const isEmpty = !isInitialLoading && filteredRows.length === 0;
+  const isEmpty = !isInitialLoading && rows.length === 0;
 
   return (
     <ListView>
@@ -278,9 +312,9 @@ export function AiProductDraftList() {
               <Button
                 variant="outline"
                 onClick={() => {
-                  void refresh("refresh");
+                  void fetchPage("refresh");
                 }}
-                disabled={isLoading || isRefreshing}
+                disabled={isLoading || isRefreshing || isLoadingMore}
               >
                 {isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 Refresh
@@ -294,7 +328,7 @@ export function AiProductDraftList() {
 
           <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
             <SummaryChip
-              label="Ready"
+              label="Ready for Review"
               value={summary.ready}
               isActive={activeTab === "READY_FOR_REVIEW"}
               onClick={() => setActiveTab("READY_FOR_REVIEW")}
@@ -370,7 +404,7 @@ export function AiProductDraftList() {
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    void refresh("loading");
+                    void fetchPage("initial");
                   }}
                 >
                   Retry
@@ -383,6 +417,7 @@ export function AiProductDraftList() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-[84px]">Preview</TableHead>
                   <TableHead className="w-[180px]">Status</TableHead>
                   <TableHead>Draft ID</TableHead>
                   <TableHead>Source</TableHead>
@@ -394,17 +429,35 @@ export function AiProductDraftList() {
                 {isInitialLoading
                   ? Array.from({ length: 8 }).map((_, index) => (
                       <TableRow key={`loading-${index}`} aria-hidden="true">
-                        <TableCell colSpan={5}>
-                          <div className="h-8 animate-pulse rounded bg-muted" />
+                        <TableCell colSpan={6}>
+                          <div className="h-10 animate-pulse rounded bg-muted" />
                         </TableCell>
                       </TableRow>
                     ))
-                  : filteredRows.map((item) => (
+                  : rows.map((item) => (
                       <TableRow
                         key={item.id}
                         className="cursor-pointer"
                         onClick={() => navigate(`/products/drafts/${item.id}`)}
                       >
+                        <TableCell>
+                          {item.thumbnail_url ? (
+                            <img
+                              src={item.thumbnail_url}
+                              alt=""
+                              loading="lazy"
+                              className="h-12 w-12 rounded border object-cover"
+                            />
+                          ) : (
+                            <div
+                              className={cn(
+                                "flex h-12 w-12 items-center justify-center rounded border bg-muted text-muted-foreground"
+                              )}
+                            >
+                              <ImageOff className="h-4 w-4" />
+                            </div>
+                          )}
+                        </TableCell>
                         <TableCell>
                           <Badge
                             variant={statusBadgeVariant(item.status)}
@@ -419,7 +472,7 @@ export function AiProductDraftList() {
                             <span className="text-xs text-muted-foreground">
                               {getDomain(item.url)}
                             </span>
-                            <span className="max-w-[520px] truncate text-sm" title={item.url ?? ""}>
+                            <span className="max-w-[440px] truncate text-sm" title={item.url ?? ""}>
                               {item.url ?? "—"}
                             </span>
                           </div>
@@ -456,6 +509,21 @@ export function AiProductDraftList() {
               </TableBody>
             </Table>
           </div>
+
+          {rows.length > 0 && nextCursor ? (
+            <div className="flex justify-center">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  void fetchPage("append");
+                }}
+                disabled={isLoadingMore || isRefreshing || isLoading}
+              >
+                {isLoadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Load More
+              </Button>
+            </div>
+          ) : null}
 
           {isEmpty ? (
             <div className="rounded-md border border-dashed p-10 text-center">

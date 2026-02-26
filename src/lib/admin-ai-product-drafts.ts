@@ -88,6 +88,7 @@ export type ProductDraftListItem = {
   id: string;
   status: ProductDraftStatus;
   url: string | null;
+  thumbnail_url: string | null;
   updated_at_ms: number;
 };
 
@@ -234,6 +235,10 @@ export async function listProductDrafts(
             id,
             status,
             url: typeof record.url === "string" ? record.url : null,
+            thumbnail_url:
+              typeof record.thumbnail_url === "string"
+                ? record.thumbnail_url
+                : null,
             updated_at_ms,
           } satisfies ProductDraftListItem;
         })

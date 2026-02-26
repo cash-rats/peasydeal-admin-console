@@ -34,6 +34,19 @@ function computeStatus(draft: StoredDraft): ProductDraftStatus {
   return "READY_FOR_REVIEW";
 }
 
+function isProductDraftStatusValue(value: string): value is ProductDraftStatus {
+  return (
+    value === "FOUND" ||
+    value === "QUEUED_FOR_DRAFT" ||
+    value === "CRAWLING" ||
+    value === "DRAFTING" ||
+    value === "READY_FOR_REVIEW" ||
+    value === "PUBLISHED" ||
+    value === "FAILED" ||
+    value === "REJECTED"
+  );
+}
+
 function ensurePayload(draft: StoredDraft): StoredDraft {
   if (draft.draft) return draft;
 
@@ -54,6 +67,70 @@ function ensurePayload(draft: StoredDraft): StoredDraft {
     ...draft,
     draft: payload,
   };
+}
+
+type DraftListCursor = {
+  updated_at_ms: number;
+  id: string;
+};
+
+function encodeCursor(cursor: DraftListCursor): string {
+  return encodeURIComponent(JSON.stringify(cursor));
+}
+
+function decodeCursor(rawCursor: string): DraftListCursor | null {
+  try {
+    const parsed = JSON.parse(decodeURIComponent(rawCursor)) as Partial<DraftListCursor>;
+    if (
+      typeof parsed.updated_at_ms !== "number" ||
+      !Number.isFinite(parsed.updated_at_ms) ||
+      typeof parsed.id !== "string" ||
+      parsed.id.length === 0
+    ) {
+      return null;
+    }
+    return {
+      updated_at_ms: parsed.updated_at_ms,
+      id: parsed.id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function compareDraftByUpdatedDesc(a: StoredDraft, b: StoredDraft): number {
+  if (a.updated_at_ms !== b.updated_at_ms) {
+    return a.updated_at_ms < b.updated_at_ms ? 1 : -1;
+  }
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? 1 : -1;
+}
+
+function isAfterCursor(item: StoredDraft, cursor: DraftListCursor): boolean {
+  if (item.updated_at_ms < cursor.updated_at_ms) return true;
+  if (item.updated_at_ms > cursor.updated_at_ms) return false;
+  return item.id < cursor.id;
+}
+
+function resolveThumbnailUrl(draft: StoredDraft): string | null {
+  const payload = draft.draft;
+  if (!payload || typeof payload !== "object") return null;
+
+  const mainRef = payload.main_image_ref;
+  if (mainRef && typeof mainRef === "object" && typeof mainRef.url === "string") {
+    const url = mainRef.url.trim();
+    if (url.length > 0) return url;
+  }
+
+  if (Array.isArray(payload.images)) {
+    for (const image of payload.images) {
+      if (typeof image !== "string") continue;
+      const trimmed = image.trim();
+      if (trimmed.length > 0) return trimmed;
+    }
+  }
+
+  return null;
 }
 
 export const handlers = [
@@ -120,7 +197,30 @@ export const handlers = [
 
   http.get("*/v1/admin/product-drafts", ({ request }) => {
     const url = new URL(request.url);
-    const statusFilter = url.searchParams.get("status");
+    const statusFilterRaw = url.searchParams.get("status");
+    if (statusFilterRaw && !isProductDraftStatusValue(statusFilterRaw)) {
+      return HttpResponse.json(
+        { error: `invalid status: "${statusFilterRaw}"` },
+        { status: 400 }
+      );
+    }
+
+    const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
+    const rawLimit = url.searchParams.get("limit");
+    const limit = rawLimit == null ? 50 : Number(rawLimit);
+    if (!Number.isFinite(limit) || limit < 1 || limit > 200) {
+      return HttpResponse.json(
+        { error: `invalid limit: "${rawLimit}"` },
+        { status: 400 }
+      );
+    }
+
+    const rawCursor = url.searchParams.get("cursor");
+    const cursor = rawCursor ? decodeCursor(rawCursor) : null;
+    if (rawCursor && !cursor) {
+      return HttpResponse.json({ error: "invalid cursor" }, { status: 400 });
+    }
+
     const items = Array.from(drafts.values())
       .map((draft) => {
         const nextStatus = computeStatus(draft);
@@ -131,17 +231,36 @@ export const handlers = [
         }
         return draft;
       })
-      .filter((draft) => (statusFilter ? draft.status === statusFilter : true))
-      .sort((a, b) => (a.updated_at_ms < b.updated_at_ms ? 1 : -1))
-      .slice(0, 50)
+      .filter((draft) => (statusFilterRaw ? draft.status === statusFilterRaw : true))
+      .filter((draft) => {
+        if (!q.length) return true;
+        const idHit = draft.id.toLowerCase().includes(q);
+        const urlHit = (draft.draft?.url ?? "").toLowerCase().includes(q);
+        return idHit || urlHit;
+      })
+      .sort(compareDraftByUpdatedDesc)
+      .filter((draft) => (cursor ? isAfterCursor(draft, cursor) : true));
+
+    const paged = items.slice(0, limit);
+    const nextCursor =
+      items.length > paged.length && paged.length > 0
+        ? encodeCursor({
+            updated_at_ms: paged[paged.length - 1].updated_at_ms,
+            id: paged[paged.length - 1].id,
+          })
+        : null;
+
+    return HttpResponse.json({
+      items: paged
       .map((draft) => ({
         id: draft.id,
         status: draft.status,
         url: draft.draft?.url ?? null,
+        thumbnail_url: resolveThumbnailUrl(draft),
         updated_at_ms: draft.updated_at_ms,
-      }));
-
-    return HttpResponse.json({ items, next_cursor: null });
+      })),
+      next_cursor: nextCursor,
+    });
   }),
 
   http.post("*/v1/admin/product-drafts/:draftId/publish", async ({ params, request }) => {
