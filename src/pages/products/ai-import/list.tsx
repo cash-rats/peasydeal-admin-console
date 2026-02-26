@@ -33,13 +33,12 @@ import { ExternalLink, ImageOff, Loader2, Search, SquarePen } from "lucide-react
 type DraftListTab =
   | "ALL"
   | "READY_FOR_REVIEW"
-  | "IN_PROGRESS"
   | "FAILED"
   | "PUBLISHED"
   | "REJECTED";
 
 const PAGE_SIZE = 10;
-const IN_PROGRESS_STATUS_SET = new Set<ProductDraftStatus>([
+const PROCESSING_STATUS_SET = new Set<ProductDraftStatus>([
   "FOUND",
   "QUEUED_FOR_DRAFT",
   "CRAWLING",
@@ -49,7 +48,6 @@ const IN_PROGRESS_STATUS_SET = new Set<ProductDraftStatus>([
 const TAB_ITEMS: Array<{ value: DraftListTab; label: string }> = [
   { value: "ALL", label: "All" },
   { value: "READY_FOR_REVIEW", label: "Ready for Review (READY_FOR_REVIEW)" },
-  { value: "IN_PROGRESS", label: "In Progress" },
   { value: "FAILED", label: "Failed" },
   { value: "PUBLISHED", label: "Published" },
   { value: "REJECTED", label: "Rejected" },
@@ -118,8 +116,8 @@ function statusBadgeClasses(status: ProductDraftStatus): string {
   }
 }
 
-function isInProgressStatus(status: ProductDraftStatus): boolean {
-  return IN_PROGRESS_STATUS_SET.has(status);
+function isProcessingStatus(status: ProductDraftStatus): boolean {
+  return PROCESSING_STATUS_SET.has(status);
 }
 
 function toStatusFilter(tab: DraftListTab): ProductDraftStatus | undefined {
@@ -136,8 +134,6 @@ function toStatusFilter(tab: DraftListTab): ProductDraftStatus | undefined {
 
 function filterItemsByTab(items: ProductDraftListItem[], tab: DraftListTab) {
   switch (tab) {
-    case "IN_PROGRESS":
-      return items.filter((item) => isInProgressStatus(item.status));
     case "READY_FOR_REVIEW":
     case "FAILED":
     case "PUBLISHED":
@@ -269,7 +265,6 @@ export function AiProductDraftList() {
   const summary = React.useMemo(
     () => ({
       ready: rows.filter((item) => item.status === "READY_FOR_REVIEW").length,
-      inProgress: rows.filter((item) => isInProgressStatus(item.status)).length,
       failed: rows.filter((item) => item.status === "FAILED").length,
       published: rows.filter((item) => item.status === "PUBLISHED").length,
       rejected: rows.filter((item) => item.status === "REJECTED").length,
@@ -278,9 +273,10 @@ export function AiProductDraftList() {
   );
 
   const hasInProgressInCurrentResult = React.useMemo(
-    () => rows.some((item) => isInProgressStatus(item.status)),
+    () => rows.some((item) => isProcessingStatus(item.status)),
     [rows]
   );
+  const isFilterLoading = isLoading;
 
   React.useEffect(() => {
     if (!hasInProgressInCurrentResult) return;
@@ -326,35 +322,33 @@ export function AiProductDraftList() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             <SummaryChip
               label="Ready for Review"
               value={summary.ready}
               isActive={activeTab === "READY_FOR_REVIEW"}
+              disabled={isFilterLoading}
               onClick={() => setActiveTab("READY_FOR_REVIEW")}
-            />
-            <SummaryChip
-              label="In Progress"
-              value={summary.inProgress}
-              isActive={activeTab === "IN_PROGRESS"}
-              onClick={() => setActiveTab("IN_PROGRESS")}
             />
             <SummaryChip
               label="Failed"
               value={summary.failed}
               isActive={activeTab === "FAILED"}
+              disabled={isFilterLoading}
               onClick={() => setActiveTab("FAILED")}
             />
             <SummaryChip
               label="Published"
               value={summary.published}
               isActive={activeTab === "PUBLISHED"}
+              disabled={isFilterLoading}
               onClick={() => setActiveTab("PUBLISHED")}
             />
             <SummaryChip
               label="Rejected"
               value={summary.rejected}
               isActive={activeTab === "REJECTED"}
+              disabled={isFilterLoading}
               onClick={() => setActiveTab("REJECTED")}
             />
           </div>
@@ -368,7 +362,11 @@ export function AiProductDraftList() {
             >
               <TabsList>
                 {TAB_ITEMS.map((tab) => (
-                  <TabsTrigger key={tab.value} value={tab.value}>
+                  <TabsTrigger
+                    key={tab.value}
+                    value={tab.value}
+                    disabled={isFilterLoading}
+                  >
                     {tab.label}
                   </TabsTrigger>
                 ))}
@@ -388,6 +386,7 @@ export function AiProductDraftList() {
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>
               Sort: Updated (newest first)
+              {isFilterLoading ? " · Loading filtered results..." : ""}
               {hasInProgressInCurrentResult ? " · Auto refresh every 15s" : ""}
             </span>
             <span>
@@ -562,17 +561,19 @@ type SummaryChipProps = {
   label: string;
   value: number;
   isActive: boolean;
+  disabled?: boolean;
   onClick: () => void;
 };
 
-function SummaryChip({ label, value, isActive, onClick }: SummaryChipProps) {
+function SummaryChip({ label, value, isActive, disabled = false, onClick }: SummaryChipProps) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       className={cn(
         "rounded-md border p-3 text-left transition-colors",
-        "hover:bg-accent",
+        disabled ? "cursor-not-allowed opacity-60" : "hover:bg-accent",
         isActive ? "border-primary bg-primary/5" : "border-border"
       )}
     >
