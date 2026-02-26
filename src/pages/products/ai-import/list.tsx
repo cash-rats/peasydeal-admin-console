@@ -37,13 +37,7 @@ type DraftListTab =
   | "PUBLISHED"
   | "REJECTED";
 
-const PAGE_SIZE = 10;
-const PROCESSING_STATUS_SET = new Set<ProductDraftStatus>([
-  "FOUND",
-  "QUEUED_FOR_DRAFT",
-  "CRAWLING",
-  "DRAFTING",
-]);
+const PAGE_SIZE = 30;
 
 const TAB_ITEMS: Array<{ value: DraftListTab; label: string }> = [
   { value: "ALL", label: "All" },
@@ -52,6 +46,102 @@ const TAB_ITEMS: Array<{ value: DraftListTab; label: string }> = [
   { value: "PUBLISHED", label: "Published" },
   { value: "REJECTED", label: "Rejected" },
 ];
+
+type DraftCacheState = {
+  entitiesById: Record<string, ProductDraftListItem>;
+  orderedIds: string[];
+  isBootstrapping: boolean;
+  isFetching: boolean;
+  isRefreshing: boolean;
+  lastSyncedAtMs: number | null;
+  error: string | null;
+};
+
+type DraftCacheAction =
+  | { type: "fetch_start"; mode: "initial" | "refresh" }
+  | { type: "upsert_page"; items: ProductDraftListItem[] }
+  | { type: "prune_missing"; ids: string[] }
+  | { type: "fetch_success"; fetchedAtMs: number }
+  | { type: "fetch_error"; message: string };
+
+const initialDraftCacheState: DraftCacheState = {
+  entitiesById: {},
+  orderedIds: [],
+  isBootstrapping: true,
+  isFetching: false,
+  isRefreshing: false,
+  lastSyncedAtMs: null,
+  error: null,
+};
+
+function sortIdsByUpdatedAt(
+  entitiesById: Record<string, ProductDraftListItem>
+): string[] {
+  return Object.values(entitiesById)
+    .sort((a, b) => b.updated_at_ms - a.updated_at_ms)
+    .map((item) => item.id);
+}
+
+function draftCacheReducer(state: DraftCacheState, action: DraftCacheAction): DraftCacheState {
+  switch (action.type) {
+    case "fetch_start":
+      return {
+        ...state,
+        error: null,
+        isFetching: true,
+        isBootstrapping: action.mode === "initial" ? true : state.isBootstrapping,
+        isRefreshing: action.mode === "refresh",
+      };
+    case "upsert_page": {
+      if (action.items.length === 0) return state;
+
+      const nextEntitiesById = { ...state.entitiesById };
+      for (const item of action.items) {
+        nextEntitiesById[item.id] = item;
+      }
+
+      return {
+        ...state,
+        entitiesById: nextEntitiesById,
+        orderedIds: sortIdsByUpdatedAt(nextEntitiesById),
+        isBootstrapping: false,
+      };
+    }
+    case "prune_missing": {
+      const keep = new Set(action.ids);
+      const nextEntitiesById: Record<string, ProductDraftListItem> = {};
+      for (const [id, item] of Object.entries(state.entitiesById)) {
+        if (keep.has(id)) {
+          nextEntitiesById[id] = item;
+        }
+      }
+      return {
+        ...state,
+        entitiesById: nextEntitiesById,
+        orderedIds: sortIdsByUpdatedAt(nextEntitiesById),
+      };
+    }
+    case "fetch_success":
+      return {
+        ...state,
+        isBootstrapping: false,
+        isFetching: false,
+        isRefreshing: false,
+        lastSyncedAtMs: action.fetchedAtMs,
+        error: null,
+      };
+    case "fetch_error":
+      return {
+        ...state,
+        isBootstrapping: false,
+        isFetching: false,
+        isRefreshing: false,
+        error: action.message,
+      };
+    default:
+      return state;
+  }
+}
 
 function statusLabel(status: ProductDraftStatus): string {
   switch (status) {
@@ -116,22 +206,6 @@ function statusBadgeClasses(status: ProductDraftStatus): string {
   }
 }
 
-function isProcessingStatus(status: ProductDraftStatus): boolean {
-  return PROCESSING_STATUS_SET.has(status);
-}
-
-function toStatusFilter(tab: DraftListTab): ProductDraftStatus | undefined {
-  switch (tab) {
-    case "READY_FOR_REVIEW":
-    case "FAILED":
-    case "PUBLISHED":
-    case "REJECTED":
-      return tab;
-    default:
-      return undefined;
-  }
-}
-
 function filterItemsByTab(items: ProductDraftListItem[], tab: DraftListTab) {
   switch (tab) {
     case "READY_FOR_REVIEW":
@@ -143,22 +217,6 @@ function filterItemsByTab(items: ProductDraftListItem[], tab: DraftListTab) {
     default:
       return items;
   }
-}
-
-function mergeById(
-  previous: ProductDraftListItem[],
-  incoming: ProductDraftListItem[]
-): ProductDraftListItem[] {
-  const next = [...previous];
-  for (const item of incoming) {
-    const index = next.findIndex((current) => current.id === item.id);
-    if (index >= 0) {
-      next[index] = item;
-      continue;
-    }
-    next.push(item);
-  }
-  return next;
 }
 
 function getDomain(rawUrl: string | null): string {
@@ -176,33 +234,26 @@ function formatUpdatedAt(updatedAtMs: number): string {
 }
 
 function normalizeSearchTerm(value: string): string {
-  return value.trim();
+  return value.trim().toLowerCase();
+}
+
+function matchesSearchTerm(item: ProductDraftListItem, searchTerm: string): boolean {
+  if (!searchTerm.length) return true;
+  if (item.id.toLowerCase().includes(searchTerm)) return true;
+  return item.url?.toLowerCase().includes(searchTerm) ?? false;
 }
 
 export function AiProductDraftList() {
   const navigate = useNavigate();
   const requestIdRef = React.useRef(0);
-  const nextCursorRef = React.useRef<string | null>(null);
 
-  const [rows, setRows] = React.useState<ProductDraftListItem[]>([]);
-  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
+  const [cacheState, dispatch] = React.useReducer(
+    draftCacheReducer,
+    initialDraftCacheState
+  );
   const [activeTab, setActiveTab] = React.useState<DraftListTab>("ALL");
   const [searchInput, setSearchInput] = React.useState("");
   const [searchTerm, setSearchTerm] = React.useState("");
-  const [isLoading, setIsLoading] = React.useState(true);
-  const [isRefreshing, setIsRefreshing] = React.useState(false);
-  const [isLoadingMore, setIsLoadingMore] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [lastSyncedAtMs, setLastSyncedAtMs] = React.useState<number | null>(null);
-
-  const statusFilter = React.useMemo(
-    () => toStatusFilter(activeTab),
-    [activeTab]
-  );
-
-  React.useEffect(() => {
-    nextCursorRef.current = nextCursor;
-  }, [nextCursor]);
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -211,85 +262,77 @@ export function AiProductDraftList() {
     return () => window.clearTimeout(timer);
   }, [searchInput]);
 
-  const fetchPage = React.useCallback(
-    async (mode: "initial" | "refresh" | "append") => {
-      const cursorToken = mode === "append" ? nextCursorRef.current : undefined;
-      if (mode === "append" && !cursorToken) return;
+  const fetchDrafts = React.useCallback(async (mode: "initial" | "refresh") => {
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    dispatch({ type: "fetch_start", mode });
 
-      const requestId = requestIdRef.current + 1;
-      requestIdRef.current = requestId;
+    const seenIds = new Set<string>();
+    let cursor: string | undefined;
 
-      if (mode === "initial") setIsLoading(true);
-      if (mode === "refresh") setIsRefreshing(true);
-      if (mode === "append") setIsLoadingMore(true);
-
-      try {
+    try {
+      while (true) {
         const response = await listProductDrafts({
-          status: statusFilter,
-          q: searchTerm.length > 0 ? searchTerm : undefined,
           limit: PAGE_SIZE,
-          cursor: cursorToken ?? undefined,
+          cursor,
         });
 
         if (requestId !== requestIdRef.current) return;
 
-        const filtered = filterItemsByTab(response.items, activeTab);
-        setNextCursor(response.next_cursor);
-        setError(null);
-        setLastSyncedAtMs(Date.now());
-
-        if (mode === "append") {
-          setRows((previous) => mergeById(previous, filtered));
-          return;
+        if (response.items.length > 0) {
+          dispatch({ type: "upsert_page", items: response.items });
+          for (const item of response.items) {
+            seenIds.add(item.id);
+          }
         }
 
-        setRows(filtered);
-      } catch (e) {
-        if (requestId !== requestIdRef.current) return;
-        const message = e instanceof Error ? e.message : "Failed to load draft list";
-        setError(message);
-      } finally {
-        if (requestId !== requestIdRef.current) return;
-        if (mode === "initial") setIsLoading(false);
-        if (mode === "refresh") setIsRefreshing(false);
-        if (mode === "append") setIsLoadingMore(false);
+        if (!response.next_cursor) break;
+        cursor = response.next_cursor;
       }
-    },
-    [activeTab, searchTerm, statusFilter]
-  );
+
+      if (requestId !== requestIdRef.current) return;
+      dispatch({ type: "prune_missing", ids: Array.from(seenIds) });
+      dispatch({ type: "fetch_success", fetchedAtMs: Date.now() });
+    } catch (e) {
+      if (requestId !== requestIdRef.current) return;
+      const message = e instanceof Error ? e.message : "Failed to load draft list";
+      dispatch({ type: "fetch_error", message });
+    }
+  }, []);
 
   React.useEffect(() => {
-    void fetchPage("initial");
-  }, [fetchPage]);
+    void fetchDrafts("initial");
+  }, [fetchDrafts]);
+
+  const allItems = React.useMemo(
+    () =>
+      cacheState.orderedIds
+        .map((id) => cacheState.entitiesById[id])
+        .filter((item): item is ProductDraftListItem => Boolean(item)),
+    [cacheState.entitiesById, cacheState.orderedIds]
+  );
+
+  const rows = React.useMemo(
+    () =>
+      filterItemsByTab(allItems, activeTab).filter((item) =>
+        matchesSearchTerm(item, searchTerm)
+      ),
+    [activeTab, allItems, searchTerm]
+  );
 
   const summary = React.useMemo(
     () => ({
-      ready: rows.filter((item) => item.status === "READY_FOR_REVIEW").length,
-      failed: rows.filter((item) => item.status === "FAILED").length,
-      published: rows.filter((item) => item.status === "PUBLISHED").length,
-      rejected: rows.filter((item) => item.status === "REJECTED").length,
+      ready: allItems.filter((item) => item.status === "READY_FOR_REVIEW").length,
+      failed: allItems.filter((item) => item.status === "FAILED").length,
+      published: allItems.filter((item) => item.status === "PUBLISHED").length,
+      rejected: allItems.filter((item) => item.status === "REJECTED").length,
     }),
-    [rows]
+    [allItems]
   );
 
-  const hasInProgressInCurrentResult = React.useMemo(
-    () => rows.some((item) => isProcessingStatus(item.status)),
-    [rows]
-  );
-  const isFilterLoading = isLoading;
-
-  React.useEffect(() => {
-    if (!hasInProgressInCurrentResult) return;
-
-    const timer = window.setInterval(() => {
-      void fetchPage("refresh");
-    }, 15000);
-
-    return () => window.clearInterval(timer);
-  }, [fetchPage, hasInProgressInCurrentResult]);
-
-  const isInitialLoading = isLoading && rows.length === 0;
+  const isInitialLoading = cacheState.isBootstrapping && allItems.length === 0;
   const isEmpty = !isInitialLoading && rows.length === 0;
+  const isRefreshDisabled = cacheState.isFetching;
 
   return (
     <ListView>
@@ -308,11 +351,11 @@ export function AiProductDraftList() {
               <Button
                 variant="outline"
                 onClick={() => {
-                  void fetchPage("refresh");
+                  void fetchDrafts("refresh");
                 }}
-                disabled={isLoading || isRefreshing || isLoadingMore}
+                disabled={isRefreshDisabled}
               >
-                {isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {cacheState.isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 Refresh
               </Button>
               <Button onClick={() => navigate("/products/ai-import")}>
@@ -327,28 +370,24 @@ export function AiProductDraftList() {
               label="Ready for Review"
               value={summary.ready}
               isActive={activeTab === "READY_FOR_REVIEW"}
-              disabled={isFilterLoading}
               onClick={() => setActiveTab("READY_FOR_REVIEW")}
             />
             <SummaryChip
               label="Failed"
               value={summary.failed}
               isActive={activeTab === "FAILED"}
-              disabled={isFilterLoading}
               onClick={() => setActiveTab("FAILED")}
             />
             <SummaryChip
               label="Published"
               value={summary.published}
               isActive={activeTab === "PUBLISHED"}
-              disabled={isFilterLoading}
               onClick={() => setActiveTab("PUBLISHED")}
             />
             <SummaryChip
               label="Rejected"
               value={summary.rejected}
               isActive={activeTab === "REJECTED"}
-              disabled={isFilterLoading}
               onClick={() => setActiveTab("REJECTED")}
             />
           </div>
@@ -362,11 +401,7 @@ export function AiProductDraftList() {
             >
               <TabsList>
                 {TAB_ITEMS.map((tab) => (
-                  <TabsTrigger
-                    key={tab.value}
-                    value={tab.value}
-                    disabled={isFilterLoading}
-                  >
+                  <TabsTrigger key={tab.value} value={tab.value}>
                     {tab.label}
                   </TabsTrigger>
                 ))}
@@ -386,24 +421,27 @@ export function AiProductDraftList() {
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>
               Sort: Updated (newest first)
-              {isFilterLoading ? " · Loading filtered results..." : ""}
-              {hasInProgressInCurrentResult ? " · Auto refresh every 15s" : ""}
+              {cacheState.isFetching && !cacheState.isRefreshing ? " · Syncing..." : ""}
+              {cacheState.isRefreshing ? " · Updating..." : ""}
             </span>
             <span>
-              Last synced: {lastSyncedAtMs ? new Date(lastSyncedAtMs).toLocaleTimeString() : "—"}
+              Last synced:{" "}
+              {cacheState.lastSyncedAtMs
+                ? new Date(cacheState.lastSyncedAtMs).toLocaleTimeString()
+                : "—"}
             </span>
           </div>
 
-          {error ? (
+          {cacheState.error ? (
             <Alert variant="destructive">
               <AlertTitle>Failed to load drafts</AlertTitle>
               <AlertDescription className="flex items-center justify-between gap-4">
-                <span>{error}</span>
+                <span>{cacheState.error}</span>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    void fetchPage("initial");
+                    void fetchDrafts(allItems.length > 0 ? "refresh" : "initial");
                   }}
                 >
                   Retry
@@ -509,21 +547,6 @@ export function AiProductDraftList() {
             </Table>
           </div>
 
-          {rows.length > 0 && nextCursor ? (
-            <div className="flex justify-center">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  void fetchPage("append");
-                }}
-                disabled={isLoadingMore || isRefreshing || isLoading}
-              >
-                {isLoadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                Load More
-              </Button>
-            </div>
-          ) : null}
-
           {isEmpty ? (
             <div className="rounded-md border border-dashed p-10 text-center">
               <div className="text-base font-semibold">No drafts found</div>
@@ -561,19 +584,17 @@ type SummaryChipProps = {
   label: string;
   value: number;
   isActive: boolean;
-  disabled?: boolean;
   onClick: () => void;
 };
 
-function SummaryChip({ label, value, isActive, disabled = false, onClick }: SummaryChipProps) {
+function SummaryChip({ label, value, isActive, onClick }: SummaryChipProps) {
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={disabled}
       className={cn(
         "rounded-md border p-3 text-left transition-colors",
-        disabled ? "cursor-not-allowed opacity-60" : "hover:bg-accent",
+        "hover:bg-accent",
         isActive ? "border-primary bg-primary/5" : "border-border"
       )}
     >
