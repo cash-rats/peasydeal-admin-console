@@ -300,9 +300,9 @@ Before/After preview dialog opens
 - [x] Wire up click handlers to call `aiEditImage()`
 
 ### 3. Loading State
-- [ ] Add `isProcessing` state to `DraggableImageCard`
-- [ ] Show spinner overlay on image card while processing
-- [ ] Disable context menu actions during processing
+- [x] Add `isProcessing` state to `DraggableImageCard`
+- [x] Show spinner overlay on image card while processing
+- [x] Disable context menu actions during processing
 
 ### 4. Before/After Preview Dialog
 - [ ] Create Before/After comparison dialog component

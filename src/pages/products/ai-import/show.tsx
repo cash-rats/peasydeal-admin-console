@@ -1153,6 +1153,7 @@ function DraggableImageCard({
   footer?: React.ReactNode;
 }) {
   const pointerDownRef = React.useRef<{ x: number; y: number } | null>(null);
+  const [isProcessing, setIsProcessing] = React.useState(false);
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `drag:${containerId}:${image.id}`,
@@ -1166,6 +1167,20 @@ function DraggableImageCard({
   const style = {
     transform: CSS.Translate.toString(transform),
   };
+  const isInteractionDisabled = isProcessing;
+
+  const handleAiEdit = React.useCallback(
+    async (mode: ImageAiEditMode) => {
+      if (!onAiEdit || isProcessing) return;
+      setIsProcessing(true);
+      try {
+        await onAiEdit(image, mode);
+      } finally {
+        setIsProcessing(false);
+      }
+    },
+    [image, isProcessing, onAiEdit]
+  );
 
   return (
     <ContextMenu>
@@ -1188,18 +1203,24 @@ function DraggableImageCard({
           <img
             src={image.previewUrl}
             alt={alt}
-            className={cn(imageClassName, "cursor-grab active:cursor-grabbing")}
+            className={cn(
+              imageClassName,
+              isInteractionDisabled
+                ? "cursor-progress"
+                : "cursor-grab active:cursor-grabbing"
+            )}
             loading="lazy"
             draggable={false}
             onDragStart={(event) => event.preventDefault()}
             onPointerDown={(event) => {
+              if (isInteractionDisabled) return;
               pointerDownRef.current = { x: event.clientX, y: event.clientY };
             }}
             onPointerCancel={() => {
               pointerDownRef.current = null;
             }}
             onClick={(event) => {
-              if (isDragging) return;
+              if (isDragging || isInteractionDisabled) return;
               const pointerDown = pointerDownRef.current;
               pointerDownRef.current = null;
               if (interactionMode === "select") {
@@ -1215,9 +1236,17 @@ function DraggableImageCard({
               if (dx > 6 || dy > 6) return;
               onPreview(image);
             }}
-            {...attributes}
-            {...listeners}
+            {...(isInteractionDisabled ? {} : attributes)}
+            {...(isInteractionDisabled ? {} : listeners)}
           />
+          {isProcessing ? (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/65">
+              <div className="flex items-center gap-2 rounded-md bg-background/90 px-2 py-1 text-xs text-foreground shadow">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Processing
+              </div>
+            </div>
+          ) : null}
           <div className="absolute left-2 top-2 rounded bg-background/80 px-2 py-0.5 text-[10px] uppercase">
             {badgeLabel}
           </div>
@@ -1230,6 +1259,7 @@ function DraggableImageCard({
                 variant="secondary"
                 size="sm"
                 className="h-6 px-2 text-[10px]"
+                disabled={isInteractionDisabled}
                 onClick={() => onSetMain?.(image)}
               >
                 Set as main
@@ -1246,6 +1276,7 @@ function DraggableImageCard({
                 isMain ? "top-8" : "top-2",
                 "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               )}
+              disabled={isInteractionDisabled}
               onClick={() => onRemove?.()}
             >
               <X className="h-3.5 w-3.5" />
@@ -1264,6 +1295,7 @@ function DraggableImageCard({
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem
+          disabled={isInteractionDisabled}
           onClick={() => void downloadImage(image.previewUrl)}
         >
           <Download className="mr-2 h-4 w-4" />
@@ -1272,21 +1304,31 @@ function DraggableImageCard({
         <ContextMenuSeparator />
         {onAiEdit ? (
           <>
-            <ContextMenuItem onClick={() => void onAiEdit(image, "remove_chinese_text")}>
+            <ContextMenuItem
+              disabled={isInteractionDisabled}
+              onClick={() => void handleAiEdit("remove_chinese_text")}
+            >
               ✨ Remove Chinese Text
             </ContextMenuItem>
-            <ContextMenuItem onClick={() => void onAiEdit(image, "remove_background")}>
+            <ContextMenuItem
+              disabled={isInteractionDisabled}
+              onClick={() => void handleAiEdit("remove_background")}
+            >
               🪄 Remove Background
             </ContextMenuItem>
             <ContextMenuSeparator />
           </>
         ) : null}
         {!isMain && onSetMain ? (
-          <ContextMenuItem onClick={() => onSetMain(image)}>
+          <ContextMenuItem
+            disabled={isInteractionDisabled}
+            onClick={() => onSetMain(image)}
+          >
             Set as main image
           </ContextMenuItem>
         ) : null}
         <ContextMenuItem
+          disabled={isInteractionDisabled}
           onClick={() => onPreview(image)}
         >
           Preview
@@ -1295,6 +1337,7 @@ function DraggableImageCard({
           <>
             <ContextMenuSeparator />
             <ContextMenuItem
+              disabled={isInteractionDisabled}
               variant="destructive"
               onClick={() => onRemove()}
             >
