@@ -37,6 +37,11 @@ import {
   type ProductDraftStatus,
 } from "@/lib/admin-ai-product-drafts";
 import { canonicalizeProductUrl } from "@/lib/canonicalize-product-url";
+import {
+  aiEditImage,
+  PROMPT_REMOVE_BACKGROUND,
+  PROMPT_REMOVE_CHINESE_TEXT,
+} from "@/lib/gemini-image-edit";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -65,8 +70,15 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { ListView, ListViewHeader } from "@/components/refine-ui/views/list-view";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
-import { GripVertical, ImagePlus, Loader2, Trash2, X } from "lucide-react";
+import { Download, GripVertical, ImagePlus, Loader2, Trash2, X } from "lucide-react";
 
 type EditSnapshot = {
   categoryIds: number[];
@@ -128,6 +140,7 @@ type MainImageSelection = {
   imageId: string;
 } | null;
 type DragKind = "variation_row" | "image_item" | null;
+type ImageAiEditMode = "remove_chinese_text" | "remove_background";
 
 type EditState = EditSnapshot & {
   images: EditImageItem[];
@@ -1076,6 +1089,32 @@ function DroppableImageContainer({
   );
 }
 
+async function downloadImage(url: string, filename?: string) {
+  try {
+    const response = await fetch(url, { mode: "cors" });
+    if (!response.ok) throw new Error("Failed to fetch image");
+    const blob = await response.blob();
+    const ext =
+      blob.type === "image/png"
+        ? ".png"
+        : blob.type === "image/webp"
+          ? ".webp"
+          : ".jpg";
+    const name = filename ?? `image_${Date.now()}${ext}`;
+    const blobUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = blobUrl;
+    anchor.download = name;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(blobUrl);
+  } catch {
+    // Fallback: open in new tab if CORS blocks the fetch
+    window.open(url, "_blank");
+  }
+}
+
 function DraggableImageCard({
   containerId,
   image,
@@ -1087,6 +1126,7 @@ function DraggableImageCard({
   onRemove,
   onSetMain,
   onPreview,
+  onAiEdit,
   onSelect,
   interactionMode = "preview",
   isSelected = false,
@@ -1104,6 +1144,7 @@ function DraggableImageCard({
   onRemove?: () => void;
   onSetMain?: (image: EditImageItem) => void;
   onPreview: (image: EditImageItem) => void;
+  onAiEdit?: (image: EditImageItem, mode: ImageAiEditMode) => Promise<void> | void;
   onSelect?: (image: EditImageItem) => void;
   interactionMode?: "preview" | "select";
   isSelected?: boolean;
@@ -1127,97 +1168,143 @@ function DraggableImageCard({
   };
 
   return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className={cn(
-        "group relative overflow-hidden rounded-lg border bg-muted",
-        isMain ? "border-amber-400 ring-2 ring-amber-300 ring-offset-2 ring-offset-background" : "",
-        isSelected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : "",
-        isDragging ? "opacity-70" : ""
-      )}
-    >
-      {isMain ? (
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-amber-400/95 py-1 text-center text-[10px] font-semibold tracking-[0.12em] text-amber-950">
-          MAIN IMAGE
-        </div>
-      ) : null}
-      <img
-        src={image.previewUrl}
-        alt={alt}
-        className={cn(imageClassName, "cursor-grab active:cursor-grabbing")}
-        loading="lazy"
-        draggable={false}
-        onDragStart={(event) => event.preventDefault()}
-        onPointerDown={(event) => {
-          pointerDownRef.current = { x: event.clientX, y: event.clientY };
-        }}
-        onPointerCancel={() => {
-          pointerDownRef.current = null;
-        }}
-        onClick={(event) => {
-          if (isDragging) return;
-          const pointerDown = pointerDownRef.current;
-          pointerDownRef.current = null;
-          if (interactionMode === "select") {
-            onSelect?.(image);
-            return;
-          }
-          if (!pointerDown) {
-            onPreview(image);
-            return;
-          }
-          const dx = Math.abs(event.clientX - pointerDown.x);
-          const dy = Math.abs(event.clientY - pointerDown.y);
-          if (dx > 6 || dy > 6) return;
-          onPreview(image);
-        }}
-        {...attributes}
-        {...listeners}
-      />
-      <div className="absolute left-2 top-2 rounded bg-background/80 px-2 py-0.5 text-[10px] uppercase">
-        {badgeLabel}
-      </div>
-      <div className="absolute bottom-2 left-2">
-        {isMain ? (
-          <Badge className="h-5 px-2 text-[10px]">Main</Badge>
-        ) : showInlineSetMain ? (
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            className="h-6 px-2 text-[10px]"
-            onClick={() => onSetMain?.(image)}
-          >
-            Set as main
-          </Button>
-        ) : null}
-      </div>
-      {showInlineRemove ? (
-        <Button
-          type="button"
-          variant="secondary"
-          size="icon"
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          ref={setNodeRef}
+          style={style}
           className={cn(
-            "absolute right-2 h-7 w-7",
-            isMain ? "top-8" : "top-2",
-            "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+            "group relative overflow-hidden rounded-lg border bg-muted",
+            isMain ? "border-amber-400 ring-2 ring-amber-300 ring-offset-2 ring-offset-background" : "",
+            isSelected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : "",
+            isDragging ? "opacity-70" : ""
           )}
-          onClick={() => onRemove?.()}
         >
-          <X className="h-3.5 w-3.5" />
-        </Button>
-      ) : null}
-      <div
-        className={cn(
-          "absolute bottom-2 right-2 rounded bg-background/85 px-2 py-0.5 text-[10px]",
-          "text-foreground"
-        )}
-      >
-        {resolutionText ?? "—"}
-      </div>
-      {footer}
-    </div>
+          {isMain ? (
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-amber-400/95 py-1 text-center text-[10px] font-semibold tracking-[0.12em] text-amber-950">
+              MAIN IMAGE
+            </div>
+          ) : null}
+          <img
+            src={image.previewUrl}
+            alt={alt}
+            className={cn(imageClassName, "cursor-grab active:cursor-grabbing")}
+            loading="lazy"
+            draggable={false}
+            onDragStart={(event) => event.preventDefault()}
+            onPointerDown={(event) => {
+              pointerDownRef.current = { x: event.clientX, y: event.clientY };
+            }}
+            onPointerCancel={() => {
+              pointerDownRef.current = null;
+            }}
+            onClick={(event) => {
+              if (isDragging) return;
+              const pointerDown = pointerDownRef.current;
+              pointerDownRef.current = null;
+              if (interactionMode === "select") {
+                onSelect?.(image);
+                return;
+              }
+              if (!pointerDown) {
+                onPreview(image);
+                return;
+              }
+              const dx = Math.abs(event.clientX - pointerDown.x);
+              const dy = Math.abs(event.clientY - pointerDown.y);
+              if (dx > 6 || dy > 6) return;
+              onPreview(image);
+            }}
+            {...attributes}
+            {...listeners}
+          />
+          <div className="absolute left-2 top-2 rounded bg-background/80 px-2 py-0.5 text-[10px] uppercase">
+            {badgeLabel}
+          </div>
+          <div className="absolute bottom-2 left-2">
+            {isMain ? (
+              <Badge className="h-5 px-2 text-[10px]">Main</Badge>
+            ) : showInlineSetMain ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="h-6 px-2 text-[10px]"
+                onClick={() => onSetMain?.(image)}
+              >
+                Set as main
+              </Button>
+            ) : null}
+          </div>
+          {showInlineRemove ? (
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon"
+              className={cn(
+                "absolute right-2 h-7 w-7",
+                isMain ? "top-8" : "top-2",
+                "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+              )}
+              onClick={() => onRemove?.()}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          ) : null}
+          <div
+            className={cn(
+              "absolute bottom-2 right-2 rounded bg-background/85 px-2 py-0.5 text-[10px]",
+              "text-foreground"
+            )}
+          >
+            {resolutionText ?? "—"}
+          </div>
+          {footer}
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem
+          onClick={() => void downloadImage(image.previewUrl)}
+        >
+          <Download className="mr-2 h-4 w-4" />
+          Download
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        {onAiEdit ? (
+          <>
+            <ContextMenuItem onClick={() => void onAiEdit(image, "remove_chinese_text")}>
+              ✨ Remove Chinese Text
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => void onAiEdit(image, "remove_background")}>
+              🪄 Remove Background
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        ) : null}
+        {!isMain && onSetMain ? (
+          <ContextMenuItem onClick={() => onSetMain(image)}>
+            Set as main image
+          </ContextMenuItem>
+        ) : null}
+        <ContextMenuItem
+          onClick={() => onPreview(image)}
+        >
+          Preview
+        </ContextMenuItem>
+        {onRemove ? (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              variant="destructive"
+              onClick={() => onRemove()}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Remove
+            </ContextMenuItem>
+          </>
+        ) : null}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -2117,6 +2204,46 @@ export function AiProductDraftShow() {
     setCategorySearchError(null);
   };
 
+  const onAiEditImage = React.useCallback(
+    async (image: EditImageItem, mode: ImageAiEditMode) => {
+      const isRemoveText = mode === "remove_chinese_text";
+      const prompt = isRemoveText ? PROMPT_REMOVE_CHINESE_TEXT : PROMPT_REMOVE_BACKGROUND;
+      const actionLabel = isRemoveText ? "Remove Chinese Text" : "Remove Background";
+
+      try {
+        const processedBlob = await aiEditImage(image.previewUrl, prompt);
+        const extension =
+          processedBlob.type === "image/png"
+            ? "png"
+            : processedBlob.type === "image/webp"
+              ? "webp"
+              : "jpg";
+        const blobUrl = URL.createObjectURL(processedBlob);
+        const anchor = document.createElement("a");
+        anchor.href = blobUrl;
+        anchor.download = `ai-edit-${mode}-${Date.now()}.${extension}`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        URL.revokeObjectURL(blobUrl);
+
+        open?.({
+          type: "success",
+          message: `${actionLabel} completed`,
+          description: "Processed image downloaded.",
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        open?.({
+          type: "error",
+          message: `${actionLabel} failed`,
+          description: message,
+        });
+      }
+    },
+    [open]
+  );
+
   if (!draftId) {
     return (
       <Alert variant="destructive">
@@ -2666,6 +2793,7 @@ export function AiProductDraftShow() {
                                                           });
                                                         }
                                                       }
+                                                      onAiEdit={onAiEditImage}
                                                     />
                                                   ))}
                                                   <button
@@ -2986,6 +3114,7 @@ export function AiProductDraftShow() {
                                         label: "Draft image",
                                       })
                                     }
+                                    onAiEdit={onAiEditImage}
                                   />
                                 ))}
                                 <button
