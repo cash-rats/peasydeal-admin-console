@@ -305,10 +305,10 @@ Before/After preview dialog opens
 - [x] Disable context menu actions during processing
 
 ### 4. Before/After Preview Dialog
-- [ ] Create Before/After comparison dialog component
-- [ ] Display original image (left) vs processed image (right)
-- [ ] "Accept" button → replace image in `editState` (type: `"uploaded"`)
-- [ ] "Cancel" button → discard processed image
+- [x] Create Before/After comparison dialog component
+- [x] Display original image (left) vs processed image (right)
+- [x] "Accept" button → replace image in `editState` (type: `"uploaded"`)
+- [x] "Cancel" button → discard processed image
 
 ### 5. Integration & Testing
 - [ ] End-to-end test: right-click → Remove Chinese Text → preview → accept

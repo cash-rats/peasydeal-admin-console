@@ -39,6 +39,9 @@ import {
 import { canonicalizeProductUrl } from "@/lib/canonicalize-product-url";
 import {
   aiEditImage,
+  DEFAULT_GEMINI_IMAGE_EDIT_MODEL,
+  GEMINI_IMAGE_EDIT_MODELS,
+  type GeminiImageEditModel,
   PROMPT_REMOVE_BACKGROUND,
   PROMPT_REMOVE_CHINESE_TEXT,
 } from "@/lib/gemini-image-edit";
@@ -97,7 +100,7 @@ type EditSnapshot = {
 
 type EditImageItem = {
   id: string;
-  type: "existing" | "new";
+  type: "existing" | "new" | "uploaded";
   url?: string;
   file?: File;
   previewUrl: string;
@@ -141,6 +144,18 @@ type MainImageSelection = {
 } | null;
 type DragKind = "variation_row" | "image_item" | null;
 type ImageAiEditMode = "remove_chinese_text" | "remove_background";
+type AiEditPreviewState = {
+  containerId: ImageContainerId;
+  imageId: string;
+  mode: ImageAiEditMode;
+  originalUrl: string;
+  processedPreviewUrl: string;
+  processedFile: File;
+};
+
+function imageAiEditModeLabel(mode: ImageAiEditMode): string {
+  return mode === "remove_chinese_text" ? "Remove Chinese Text" : "Remove Background";
+}
 
 type EditState = EditSnapshot & {
   images: EditImageItem[];
@@ -160,6 +175,7 @@ const CURRENCY_OPTIONS = [
   "EUR",
   "GBP",
 ];
+const AI_IMAGE_MODEL_STORAGE_KEY = "peasydeal_admin_ai_image_model";
 
 function toNumberOrNull(value: string): number | null {
   const trimmed = value.trim();
@@ -290,13 +306,17 @@ function fileSignature(file: File): string {
   return `${file.name}|${file.size}|${file.lastModified}|${file.type}`;
 }
 
+function isUploadedImageType(image: Pick<EditImageItem, "type">): boolean {
+  return image.type === "new" || image.type === "uploaded";
+}
+
 function imageDedupKey(image: Pick<EditImageItem, "type" | "url" | "file">): string | null {
   if (image.type === "existing" && typeof image.url === "string") {
     const trimmed = image.url.trim();
     return trimmed.length ? `url:${trimmed}` : null;
   }
 
-  if (image.type === "new" && image.file) {
+  if (isUploadedImageType(image) && image.file) {
     return `file:${fileSignature(image.file)}`;
   }
 
@@ -531,7 +551,7 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
   if (normalizedState.taxRate !== snapshot.taxRate) return true;
   if (normalizedState.shippingFee !== snapshot.shippingFee) return true;
   if (normalizedState.url !== snapshot.url) return true;
-  if (normalizedState.images.some((image) => image.type === "new")) return true;
+  if (normalizedState.images.some((image) => isUploadedImageType(image))) return true;
   const existingUrls = normalizedState.images
     .filter((image) => image.type === "existing" && image.url)
     .map((image) => image.url as string);
@@ -542,7 +562,7 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
     const current = normalizedState.variations[i];
     const original = snapshot.variationSnapshots[i];
     if (!original) return true;
-    if (current.images.some((image) => image.type === "new")) return true;
+    if (current.images.some((image) => isUploadedImageType(image))) return true;
     const currentImageUrls = current.images
       .filter((image) => image.type === "existing" && image.url)
       .map((image) => image.url as string);
@@ -562,7 +582,7 @@ function computeIsDirty(state: EditState, snapshot: EditSnapshot): boolean {
 function revokeNewImagePreviews(state: EditState | null) {
   if (!state) return;
   state.images.forEach((image) => {
-    if (image.type === "new") {
+    if (isUploadedImageType(image)) {
       URL.revokeObjectURL(image.previewUrl);
     }
   });
@@ -572,7 +592,7 @@ function revokeNewVariationPreviews(state: EditState | null) {
   if (!state) return;
   state.variations.forEach((variation) => {
     variation.images.forEach((image) => {
-      if (image.type === "new") {
+      if (isUploadedImageType(image)) {
         URL.revokeObjectURL(image.previewUrl);
       }
     });
@@ -608,7 +628,7 @@ function addImages(state: EditState, files: File[]): EditState {
 }
 
 function removeImage(state: EditState, image: EditImageItem): EditState {
-  if (image.type === "new") {
+  if (isUploadedImageType(image)) {
     URL.revokeObjectURL(image.previewUrl);
   }
 
@@ -635,7 +655,7 @@ function addVariation(state: EditState): EditState {
 
 function removeVariation(state: EditState, variation: EditVariationItem): EditState {
   variation.images.forEach((image) => {
-    if (image.type === "new") {
+    if (isUploadedImageType(image)) {
       URL.revokeObjectURL(image.previewUrl);
     }
   });
@@ -713,7 +733,7 @@ function removeVariationImage(
     variations: state.variations.map((item) => {
       if (item.id !== variationId) return item;
       const target = item.images.find((image) => image.id === imageId);
-      if (target?.type === "new") {
+      if (target && isUploadedImageType(target)) {
         URL.revokeObjectURL(target.previewUrl);
       }
       return {
@@ -722,6 +742,55 @@ function removeVariationImage(
       };
     }),
   };
+}
+
+function replaceImageWithUploaded(
+  state: EditState,
+  containerId: ImageContainerId,
+  imageId: string,
+  file: File,
+  previewUrl: string
+): EditState {
+  const replacement: EditImageItem = {
+    id: imageId,
+    type: "uploaded",
+    file,
+    previewUrl,
+  };
+
+  if (containerId === "main") {
+    let replaced = false;
+    const images = state.images.map((image) => {
+      if (image.id !== imageId) return image;
+      replaced = true;
+      if (isUploadedImageType(image)) {
+        URL.revokeObjectURL(image.previewUrl);
+      }
+      return replacement;
+    });
+    return replaced ? { ...state, images } : state;
+  }
+
+  const variationId = getVariationId(containerId);
+  if (!variationId) return state;
+
+  let replaced = false;
+  const variations = state.variations.map((variation) => {
+    if (variation.id !== variationId) return variation;
+    return {
+      ...variation,
+      images: variation.images.map((image) => {
+        if (image.id !== imageId) return image;
+        replaced = true;
+        if (isUploadedImageType(image)) {
+          URL.revokeObjectURL(image.previewUrl);
+        }
+        return replacement;
+      }),
+    };
+  });
+
+  return replaced ? { ...state, variations } : state;
 }
 
 function updateVariationImageUrl(
@@ -1144,7 +1213,11 @@ function DraggableImageCard({
   onRemove?: () => void;
   onSetMain?: (image: EditImageItem) => void;
   onPreview: (image: EditImageItem) => void;
-  onAiEdit?: (image: EditImageItem, mode: ImageAiEditMode) => Promise<void> | void;
+  onAiEdit?: (
+    containerId: ImageContainerId,
+    image: EditImageItem,
+    mode: ImageAiEditMode
+  ) => Promise<void> | void;
   onSelect?: (image: EditImageItem) => void;
   interactionMode?: "preview" | "select";
   isSelected?: boolean;
@@ -1174,12 +1247,12 @@ function DraggableImageCard({
       if (!onAiEdit || isProcessing) return;
       setIsProcessing(true);
       try {
-        await onAiEdit(image, mode);
+        await onAiEdit(containerId, image, mode);
       } finally {
         setIsProcessing(false);
       }
     },
-    [image, isProcessing, onAiEdit]
+    [containerId, image, isProcessing, onAiEdit]
   );
 
   return (
@@ -1406,7 +1479,7 @@ async function toPayload(
         const trimmed = image.url.trim();
         return { id: image.id, url: trimmed.length ? trimmed : null };
       }
-      if (image.type === "new" && image.file) {
+      if (isUploadedImageType(image) && image.file) {
         return { id: image.id, url: await fileToDataUrl(image.file) };
       }
       return { id: image.id, url: null };
@@ -1424,7 +1497,7 @@ async function toPayload(
             const trimmed = image.url.trim();
             return { id: image.id, url: trimmed.length ? trimmed : null };
           }
-          if (image.type === "new" && image.file) {
+          if (isUploadedImageType(image) && image.file) {
             return { id: image.id, url: await fileToDataUrl(image.file) };
           }
           return { id: image.id, url: null };
@@ -1815,6 +1888,10 @@ export function AiProductDraftShow() {
     resolution: string;
     label: string;
   } | null>(null);
+  const [aiEditPreview, setAiEditPreview] = React.useState<AiEditPreviewState | null>(null);
+  const [aiImageModel, setAiImageModel] = React.useState<GeminiImageEditModel>(
+    DEFAULT_GEMINI_IMAGE_EDIT_MODEL
+  );
   const [categoryQuery, setCategoryQuery] = React.useState("");
   const [categoryCandidates, setCategoryCandidates] = React.useState<CategoryTaxonomyCandidate[]>(
     []
@@ -1827,11 +1904,18 @@ export function AiProductDraftShow() {
   const [editState, setEditState] = React.useState<EditState | null>(null);
   const editSnapshotRef = React.useRef<EditSnapshot | null>(null);
   const editStateRef = React.useRef<EditState | null>(null);
+  const aiEditPreviewRef = React.useRef<AiEditPreviewState | null>(null);
   const imageResolutionCacheRef = React.useRef<Map<string, string>>(new Map());
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const draftPayload = React.useMemo(() => draft?.draft ?? null, [draft]);
   const categoryQueryTrimmed = React.useMemo(() => categoryQuery.trim(), [categoryQuery]);
+  const selectedAiImageModel = React.useMemo(
+    () =>
+      GEMINI_IMAGE_EDIT_MODELS.find((item) => item.value === aiImageModel) ??
+      GEMINI_IMAGE_EDIT_MODELS[0],
+    [aiImageModel]
+  );
 
   const refresh = React.useCallback(async () => {
     if (!draftId) return;
@@ -1854,6 +1938,19 @@ export function AiProductDraftShow() {
   React.useEffect(() => {
     setPublishVisibility(true);
   }, [draftId]);
+
+  React.useEffect(() => {
+    const storedValue = window.localStorage.getItem(AI_IMAGE_MODEL_STORAGE_KEY);
+    if (!storedValue) return;
+    const isSupported = GEMINI_IMAGE_EDIT_MODELS.some((item) => item.value === storedValue);
+    if (isSupported) {
+      setAiImageModel(storedValue as GeminiImageEditModel);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(AI_IMAGE_MODEL_STORAGE_KEY, aiImageModel);
+  }, [aiImageModel]);
 
   React.useEffect(() => {
     if (!draftId) return;
@@ -1916,6 +2013,15 @@ export function AiProductDraftShow() {
     },
     []
   );
+
+  const closeAiEditPreview = React.useCallback((revokeProcessedPreview: boolean) => {
+    setAiEditPreview((prev) => {
+      if (prev && revokeProcessedPreview) {
+        URL.revokeObjectURL(prev.processedPreviewUrl);
+      }
+      return null;
+    });
+  }, []);
 
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -1997,6 +2103,8 @@ export function AiProductDraftShow() {
         revokeNewVariationPreviews(prev);
         return null;
       });
+      closeAiEditPreview(true);
+      setPreviewImage(null);
       setCategoryQuery("");
       setCategoryCandidates([]);
       setCategorySearchError(null);
@@ -2015,6 +2123,8 @@ export function AiProductDraftShow() {
       revokeNewVariationPreviews(prev);
       return createEditState(snapshot);
     });
+    closeAiEditPreview(true);
+    setPreviewImage(null);
     setCategoryQuery("");
     setCategoryCandidates([]);
     setCategorySearchError(null);
@@ -2022,11 +2132,15 @@ export function AiProductDraftShow() {
     setSelectedCategoryPreview(null);
     setVariationImageUrlInputs({});
     setSelectedVariationImageIds({});
-  }, [draftPayload]);
+  }, [closeAiEditPreview, draftPayload]);
 
   React.useEffect(() => {
     editStateRef.current = editState;
   }, [editState]);
+
+  React.useEffect(() => {
+    aiEditPreviewRef.current = aiEditPreview;
+  }, [aiEditPreview]);
 
   const imageResolutionTargets = React.useMemo(() => {
     if (!editState) return [] as Array<{ id: string; previewUrl: string }>;
@@ -2090,6 +2204,9 @@ export function AiProductDraftShow() {
     return () => {
       revokeNewImagePreviews(editStateRef.current);
       revokeNewVariationPreviews(editStateRef.current);
+      if (aiEditPreviewRef.current) {
+        URL.revokeObjectURL(aiEditPreviewRef.current.processedPreviewUrl);
+      }
     };
   }, []);
 
@@ -2248,32 +2365,44 @@ export function AiProductDraftShow() {
   };
 
   const onAiEditImage = React.useCallback(
-    async (image: EditImageItem, mode: ImageAiEditMode) => {
-      const isRemoveText = mode === "remove_chinese_text";
-      const prompt = isRemoveText ? PROMPT_REMOVE_CHINESE_TEXT : PROMPT_REMOVE_BACKGROUND;
-      const actionLabel = isRemoveText ? "Remove Chinese Text" : "Remove Background";
+    async (containerId: ImageContainerId, image: EditImageItem, mode: ImageAiEditMode) => {
+      const prompt =
+        mode === "remove_chinese_text" ? PROMPT_REMOVE_CHINESE_TEXT : PROMPT_REMOVE_BACKGROUND;
+      const actionLabel = imageAiEditModeLabel(mode);
 
       try {
-        const processedBlob = await aiEditImage(image.previewUrl, prompt);
+        const processedBlob = await aiEditImage(image.previewUrl, prompt, {
+          model: aiImageModel,
+        });
+        if (!processedBlob.type.startsWith("image/")) {
+          throw new Error("Gemini did not return a valid image.");
+        }
         const extension =
           processedBlob.type === "image/png"
             ? "png"
             : processedBlob.type === "image/webp"
               ? "webp"
               : "jpg";
-        const blobUrl = URL.createObjectURL(processedBlob);
-        const anchor = document.createElement("a");
-        anchor.href = blobUrl;
-        anchor.download = `ai-edit-${mode}-${Date.now()}.${extension}`;
-        document.body.appendChild(anchor);
-        anchor.click();
-        document.body.removeChild(anchor);
-        URL.revokeObjectURL(blobUrl);
+        const file = new File(
+          [processedBlob],
+          `ai-edit-${mode}-${Date.now()}.${extension}`,
+          { type: processedBlob.type }
+        );
+        const processedPreviewUrl = URL.createObjectURL(file);
 
-        open?.({
-          type: "success",
-          message: `${actionLabel} completed`,
-          description: "Processed image downloaded.",
+        setPreviewImage(null);
+        setAiEditPreview((prev) => {
+          if (prev) {
+            URL.revokeObjectURL(prev.processedPreviewUrl);
+          }
+          return {
+            containerId,
+            imageId: image.id,
+            mode,
+            originalUrl: image.previewUrl,
+            processedPreviewUrl,
+            processedFile: file,
+          };
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
@@ -2284,8 +2413,40 @@ export function AiProductDraftShow() {
         });
       }
     },
-    [open]
+    [aiImageModel, open]
   );
+
+  const onAcceptAiEditPreview = React.useCallback(() => {
+    const current = aiEditPreviewRef.current;
+    if (!current) return;
+
+    const state = editStateRef.current;
+    if (!state || !isImageInContainer(state, current.containerId, current.imageId)) {
+      closeAiEditPreview(true);
+      open?.({
+        type: "error",
+        message: "Apply AI edit failed",
+        description: "Target image is no longer available.",
+      });
+      return;
+    }
+
+    updateEditState((prev) =>
+      replaceImageWithUploaded(
+        prev,
+        current.containerId,
+        current.imageId,
+        current.processedFile,
+        current.processedPreviewUrl
+      )
+    );
+    closeAiEditPreview(false);
+    open?.({
+      type: "success",
+      message: `${imageAiEditModeLabel(current.mode)} applied`,
+      description: "Image replaced in draft.",
+    });
+  }, [closeAiEditPreview, open, updateEditState]);
 
   if (!draftId) {
     return (
@@ -3108,8 +3269,44 @@ export function AiProductDraftShow() {
                         </Card>
 
                         <Card>
-                          <CardHeader>
+                          <CardHeader className="gap-3">
                             <CardTitle className="text-base">Images</CardTitle>
+                            <div className="grid gap-2 sm:max-w-md">
+                              <Label htmlFor="ai-image-model">AI Image Edit Model</Label>
+                              <Select
+                                value={aiImageModel}
+                                onValueChange={(value) => {
+                                  const isSupported = GEMINI_IMAGE_EDIT_MODELS.some(
+                                    (item) => item.value === value
+                                  );
+                                  if (!isSupported) return;
+                                  setAiImageModel(value as GeminiImageEditModel);
+                                }}
+                              >
+                                <SelectTrigger id="ai-image-model">
+                                  <SelectValue placeholder="Select model" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {GEMINI_IMAGE_EDIT_MODELS.map((item) => (
+                                    <SelectItem key={item.value} value={item.value}>
+                                      {item.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <p className="text-xs text-muted-foreground">
+                                Used for “Remove Chinese Text” and “Remove Background”.
+                                {" "}
+                                2.5 Flash is usually cheaper; 3.1 Flash is usually more stable.
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                Current:
+                                {" "}
+                                {selectedAiImageModel.label}
+                                {" · "}
+                                {selectedAiImageModel.hint}
+                              </p>
+                            </div>
                           </CardHeader>
                           <CardContent className="flex flex-col gap-2">
                             <DroppableImageContainer
@@ -3235,6 +3432,64 @@ export function AiProductDraftShow() {
                               alt={previewImage.label}
                               className="max-h-full max-w-full object-contain"
                             />
+                          </div>
+                        </div>
+                      ) : null}
+                    </DialogContent>
+                  </Dialog>
+
+                  <Dialog
+                    open={!!aiEditPreview}
+                    onOpenChange={(open) => {
+                      if (!open) closeAiEditPreview(true);
+                    }}
+                  >
+                    <DialogContent className="max-w-[min(96vw,1320px)]">
+                      <DialogTitle>
+                        Review AI Edit: {aiEditPreview ? imageAiEditModeLabel(aiEditPreview.mode) : ""}
+                      </DialogTitle>
+                      {aiEditPreview ? (
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                            <div className="overflow-hidden rounded-md border bg-muted/20">
+                              <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
+                                Original
+                              </div>
+                              <div className="flex h-[min(68vh,720px)] items-center justify-center p-3">
+                                <img
+                                  src={aiEditPreview.originalUrl}
+                                  alt="Original image"
+                                  className="max-h-full max-w-full object-contain"
+                                />
+                              </div>
+                            </div>
+                            <div className="overflow-hidden rounded-md border bg-muted/20">
+                              <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
+                                Processed
+                              </div>
+                              <div className="flex h-[min(68vh,720px)] items-center justify-center p-3">
+                                <img
+                                  src={aiEditPreview.processedPreviewUrl}
+                                  alt="Processed image"
+                                  className="max-h-full max-w-full object-contain"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => closeAiEditPreview(true)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={onAcceptAiEditPreview}
+                            >
+                              Accept
+                            </Button>
                           </div>
                         </div>
                       ) : null}

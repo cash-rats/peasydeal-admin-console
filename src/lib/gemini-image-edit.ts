@@ -11,8 +11,31 @@ with a clean pure white (#FFFFFF) background. Maintain the original
 product size and proportions.
 `.trim();
 
+export type GeminiImageEditModel =
+  | "gemini-3.1-flash-image-preview"
+  | "gemini-2.5-flash-image";
+
+export const GEMINI_IMAGE_EDIT_MODELS: Array<{
+  value: GeminiImageEditModel;
+  label: string;
+  hint: string;
+}> = [
+  {
+    value: "gemini-3.1-flash-image-preview",
+    label: "Gemini 3.1 Flash Image",
+    hint: "Higher quality baseline (higher cost).",
+  },
+  {
+    value: "gemini-2.5-flash-image",
+    label: "Gemini 2.5 Flash Image",
+    hint: "Lower cost option for routine edits.",
+  },
+];
+
+export const DEFAULT_GEMINI_IMAGE_EDIT_MODEL: GeminiImageEditModel =
+  "gemini-3.1-flash-image-preview";
+
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY?.trim();
-const MODEL = "gemini-3.1-flash-image-preview";
 const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta";
 
 type GeminiInlineData = {
@@ -36,6 +59,14 @@ type GeminiCandidate = {
 type GeminiApiResponse = {
   candidates?: GeminiCandidate[];
 };
+
+type AiEditImageOptions = {
+  model?: GeminiImageEditModel;
+};
+
+function isGeminiImageEditModel(value: string): value is GeminiImageEditModel {
+  return GEMINI_IMAGE_EDIT_MODELS.some((item) => item.value === value);
+}
 
 /**
  * Converts a Blob to a base64 string
@@ -98,7 +129,11 @@ async function parseGeminiError(response: Response): Promise<string> {
 /**
  * Calls Gemini REST API to edit an image based on the provided prompt
  */
-export async function aiEditImage(imageUrl: string, prompt: string): Promise<Blob> {
+export async function aiEditImage(
+  imageUrl: string,
+  prompt: string,
+  options?: AiEditImageOptions
+): Promise<Blob> {
   if (!GEMINI_API_KEY) {
     throw new Error("VITE_GEMINI_API_KEY is not set in environment variables.");
   }
@@ -107,6 +142,10 @@ export async function aiEditImage(imageUrl: string, prompt: string): Promise<Blo
   }
   if (!prompt.trim()) {
     throw new Error("Prompt is required for AI image editing.");
+  }
+  const selectedModel = options?.model ?? DEFAULT_GEMINI_IMAGE_EDIT_MODEL;
+  if (!isGeminiImageEditModel(selectedModel)) {
+    throw new Error(`Unsupported Gemini image model: ${selectedModel}`);
   }
 
   // 1. Fetch the image and convert to base64
@@ -134,7 +173,7 @@ export async function aiEditImage(imageUrl: string, prompt: string): Promise<Blo
   let response: Response;
   try {
     response = await fetch(
-      `${GEMINI_ENDPOINT}/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      `${GEMINI_ENDPOINT}/models/${selectedModel}:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
