@@ -1,16 +1,15 @@
-import { useNotification } from "@refinedev/core";
 import {
   closestCenter,
-  pointerWithin,
   DndContext,
   KeyboardSensor,
   PointerSensor,
-  type DragEndEvent,
-  type DragStartEvent,
+  pointerWithin,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import {
   arrayMove,
@@ -20,33 +19,11 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { useNotification } from "@refinedev/core";
 import React from "react";
 import { useNavigate, useParams } from "react-router";
 
-import {
-  deleteProductDraft,
-  getProductDraft,
-  isTerminalStatus,
-  publishProductDraft,
-  rejectProductDraft,
-  searchCategoryTaxonomy,
-  uploadProductDraftImage,
-  updateProductDraft,
-  type CategoryTaxonomyCandidate,
-  type ProductDraft,
-  type ProductDraftPayload,
-  type ProductDraftStatus,
-} from "@/lib/admin-ai-product-drafts";
-import { canonicalizeProductUrl } from "@/lib/canonicalize-product-url";
-import {
-  aiEditImage,
-  DEFAULT_GEMINI_IMAGE_EDIT_MODEL,
-  GEMINI_IMAGE_EDIT_MODELS,
-  type GeminiImageEditModel,
-  PROMPT_REMOVE_BACKGROUND,
-  PROMPT_REPLACE_TEXT_OVERLAY_WITH_ENGLISH,
-  PROMPT_REMOVE_TEXT_OVERLAY,
-} from "@/lib/gemini-image-edit";
+import { ListView, ListViewHeader } from "@/components/refine-ui/views/list-view";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -62,6 +39,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -73,15 +58,30 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { ListView, ListViewHeader } from "@/components/refine-ui/views/list-view";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
+  deleteProductDraft,
+  getProductDraft,
+  isTerminalStatus,
+  publishProductDraft,
+  rejectProductDraft,
+  searchCategoryTaxonomy,
+  updateProductDraft,
+  uploadProductDraftImage,
+  type CategoryTaxonomyCandidate,
+  type ProductDraft,
+  type ProductDraftPayload,
+  type ProductDraftStatus,
+} from "@/lib/admin-ai-product-drafts";
+import { canonicalizeProductUrl } from "@/lib/canonicalize-product-url";
+import {
+  aiEditImage,
+  DEFAULT_GEMINI_IMAGE_EDIT_MODEL,
+  GEMINI_IMAGE_EDIT_MODELS,
+  PROMPT_REMOVE_BACKGROUND,
+  PROMPT_REMOVE_TEXT_OVERLAY,
+  PROMPT_REPLACE_TEXT_OVERLAY_WITH_ENGLISH,
+  type GeminiImageEditModel,
+} from "@/lib/gemini-image-edit";
 import { cn } from "@/lib/utils";
 import { Download, GripVertical, ImagePlus, Loader2, Trash2, X } from "lucide-react";
 
@@ -164,6 +164,43 @@ type PreviewImageState = {
   resolution: string;
   label: string;
 };
+type BatchSelectionKey = string;
+type BatchEditTarget = {
+  key: BatchSelectionKey;
+  containerId: ImageContainerId;
+  imageId: string;
+  label: string;
+  image: EditImageItem;
+};
+type BatchEditFailureItem = {
+  key: BatchSelectionKey;
+  label: string;
+  message: string;
+};
+type BatchEditState = {
+  mode: ImageAiEditMode;
+  total: number;
+  completed: number;
+  succeeded: number;
+  failed: number;
+  active: number;
+  activeKeys: BatchSelectionKey[];
+  failures: BatchEditFailureItem[];
+  isRunning: boolean;
+};
+type LastBatchAppliedItem = {
+  key: BatchSelectionKey;
+  containerId: ImageContainerId;
+  imageId: string;
+  label: string;
+  previousImage: EditImageItem;
+  appliedPreviewUrl: string;
+};
+type LastBatchSession = {
+  mode: ImageAiEditMode;
+  appliedKeys: BatchSelectionKey[];
+  appliedItems: LastBatchAppliedItem[];
+};
 
 function imageAiEditModeLabel(mode: ImageAiEditMode): string {
   switch (mode) {
@@ -197,12 +234,87 @@ const CURRENCY_OPTIONS = [
   "GBP",
 ];
 const AI_IMAGE_MODEL_STORAGE_KEY = "peasydeal_admin_ai_image_model";
+const BATCH_EDIT_CONCURRENCY = 2;
 
 function toNumberOrNull(value: string): number | null {
   const trimmed = value.trim();
   if (!trimmed.length) return null;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function createBatchSelectionKey(
+  containerId: ImageContainerId,
+  imageId: string
+): BatchSelectionKey {
+  return `${containerId}::${imageId}`;
+}
+
+function getImageAiEditPrompt(mode: ImageAiEditMode): string {
+  switch (mode) {
+    case "remove_text_overlay":
+      return PROMPT_REMOVE_TEXT_OVERLAY;
+    case "replace_text_overlay_with_english":
+      return PROMPT_REPLACE_TEXT_OVERLAY_WITH_ENGLISH;
+    case "remove_background":
+      return PROMPT_REMOVE_BACKGROUND;
+    default:
+      return PROMPT_REMOVE_TEXT_OVERLAY;
+  }
+}
+
+function buildBatchEditTargets(state: Pick<EditState, "images" | "variations">): BatchEditTarget[] {
+  const mainTargets = state.images.map((image, index) => ({
+    key: createBatchSelectionKey("main", image.id),
+    containerId: "main" as const,
+    imageId: image.id,
+    label: `Main image ${index + 1}`,
+    image,
+  }));
+
+  const variationTargets = state.variations.flatMap((variation, variationIndex) => {
+    const variationLabel = variation.title.trim().length
+      ? variation.title.trim()
+      : `Variation ${variationIndex + 1}`;
+
+    return variation.images.map((image, imageIndex) => ({
+      key: createBatchSelectionKey(toVariationContainerId(variation.id), image.id),
+      containerId: toVariationContainerId(variation.id),
+      imageId: image.id,
+      label: `${variationLabel} · Image ${imageIndex + 1}`,
+      image,
+    }));
+  });
+
+  return [...mainTargets, ...variationTargets];
+}
+
+async function processAiEditForImage(
+  image: EditImageItem,
+  mode: ImageAiEditMode,
+  model: GeminiImageEditModel
+): Promise<{ file: File; previewUrl: string }> {
+  const processedBlob = await aiEditImage(image.previewUrl, getImageAiEditPrompt(mode), {
+    model,
+  });
+  if (!processedBlob.type.startsWith("image/")) {
+    throw new Error("Gemini did not return a valid image.");
+  }
+
+  const extension =
+    processedBlob.type === "image/png"
+      ? "png"
+      : processedBlob.type === "image/webp"
+        ? "webp"
+        : "jpg";
+  const file = new File([processedBlob], `ai-edit-${mode}-${Date.now()}.${extension}`, {
+    type: processedBlob.type,
+  });
+
+  return {
+    file,
+    previewUrl: URL.createObjectURL(file),
+  };
 }
 
 function resolveVariationPrice(
@@ -432,23 +544,23 @@ function toEditSnapshot(payload: ProductDraftPayload): EditSnapshot {
 
   const imageUrls = Array.isArray(payload.images)
     ? uniqueStringArray(
-        payload.images.filter((item): item is string => typeof item === "string")
-      )
+      payload.images.filter((item): item is string => typeof item === "string")
+    )
     : [];
 
   const variationSnapshots = Array.isArray(payload.variations)
     ? payload.variations.map((item) => ({
-        imageUrls:
-          item && Array.isArray(item.images)
-            ? item.images.filter((image): image is string => typeof image === "string")
-            : [],
-        position:
-          item && (typeof item.position === "number" || typeof item.position === "string")
-            ? String(item.position)
-            : "",
-        price: resolveVariationPrice(item?.price, topLevelPrice),
-        title: item && typeof item.title === "string" ? item.title : "",
-      }))
+      imageUrls:
+        item && Array.isArray(item.images)
+          ? item.images.filter((image): image is string => typeof image === "string")
+          : [],
+      position:
+        item && (typeof item.position === "number" || typeof item.position === "string")
+          ? String(item.position)
+          : "",
+      price: resolveVariationPrice(item?.price, topLevelPrice),
+      title: item && typeof item.title === "string" ? item.title : "",
+    }))
     : [];
 
   const rawMainImageRef = payload.main_image_ref;
@@ -765,18 +877,41 @@ function removeVariationImage(
   };
 }
 
-function replaceImageWithUploaded(
+function cloneEditImageItem(image: EditImageItem): EditImageItem {
+  if (image.type === "existing") {
+    return {
+      id: image.id,
+      type: "existing",
+      url: image.url,
+      previewUrl: image.previewUrl,
+    };
+  }
+
+  return {
+    id: image.id,
+    type: image.type,
+    file: image.file,
+    previewUrl: image.previewUrl,
+  };
+}
+
+function revokeLocalImagePreview(image: EditImageItem) {
+  if (isUploadedImageType(image)) {
+    URL.revokeObjectURL(image.previewUrl);
+  }
+}
+
+function replaceImageWithExistingState(
   state: EditState,
   containerId: ImageContainerId,
   imageId: string,
-  file: File,
-  previewUrl: string
+  replacementImage: EditImageItem,
+  options?: { revokeReplacedPreview?: boolean }
 ): EditState {
+  const revokeReplacedPreview = options?.revokeReplacedPreview ?? true;
   const replacement: EditImageItem = {
+    ...replacementImage,
     id: imageId,
-    type: "uploaded",
-    file,
-    previewUrl,
   };
 
   if (containerId === "main") {
@@ -784,7 +919,11 @@ function replaceImageWithUploaded(
     const images = state.images.map((image) => {
       if (image.id !== imageId) return image;
       replaced = true;
-      if (isUploadedImageType(image)) {
+      if (
+        revokeReplacedPreview &&
+        isUploadedImageType(image) &&
+        image.previewUrl !== replacement.previewUrl
+      ) {
         URL.revokeObjectURL(image.previewUrl);
       }
       return replacement;
@@ -803,7 +942,11 @@ function replaceImageWithUploaded(
       images: variation.images.map((image) => {
         if (image.id !== imageId) return image;
         replaced = true;
-        if (isUploadedImageType(image)) {
+        if (
+          revokeReplacedPreview &&
+          isUploadedImageType(image) &&
+          image.previewUrl !== replacement.previewUrl
+        ) {
           URL.revokeObjectURL(image.previewUrl);
         }
         return replacement;
@@ -812,6 +955,28 @@ function replaceImageWithUploaded(
   });
 
   return replaced ? { ...state, variations } : state;
+}
+
+function replaceImageWithUploaded(
+  state: EditState,
+  containerId: ImageContainerId,
+  imageId: string,
+  file: File,
+  previewUrl: string,
+  options?: { revokeReplacedPreview?: boolean }
+): EditState {
+  return replaceImageWithExistingState(
+    state,
+    containerId,
+    imageId,
+    {
+      id: imageId,
+      type: "uploaded",
+      file,
+      previewUrl,
+    },
+    options
+  );
 }
 
 function updateVariationImageUrl(
@@ -1124,9 +1289,11 @@ function moveImageBetweenContainers(
 
 function SortableVariationRow({
   id,
+  isDisabled = false,
   children,
 }: {
   id: string;
+  isDisabled?: boolean;
   children: React.ReactNode;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -1152,8 +1319,9 @@ function SortableVariationRow({
           variant="ghost"
           size="icon"
           className="h-7 w-7 cursor-grab active:cursor-grabbing"
-          {...attributes}
-          {...listeners}
+          disabled={isDisabled}
+          {...(isDisabled ? {} : attributes)}
+          {...(isDisabled ? {} : listeners)}
         >
           <GripVertical className="h-4 w-4" />
         </Button>
@@ -1236,8 +1404,15 @@ function DraggableImageCard({
   onSelect,
   interactionMode = "preview",
   isSelected = false,
+  batchChecked = false,
+  onBatchCheckedChange,
+  batchSelectionDisabled = false,
   showInlineSetMain = true,
   showInlineRemove = true,
+  isEdited = false,
+  onRevert,
+  disableMutatingActions = false,
+  externalProcessing = false,
   footer,
 }: {
   containerId: ImageContainerId;
@@ -1258,8 +1433,15 @@ function DraggableImageCard({
   onSelect?: (image: EditImageItem) => void;
   interactionMode?: "preview" | "select";
   isSelected?: boolean;
+  batchChecked?: boolean;
+  onBatchCheckedChange?: (checked: boolean) => void;
+  batchSelectionDisabled?: boolean;
   showInlineSetMain?: boolean;
   showInlineRemove?: boolean;
+  isEdited?: boolean;
+  onRevert?: () => void;
+  disableMutatingActions?: boolean;
+  externalProcessing?: boolean;
   footer?: React.ReactNode;
 }) {
   const pointerDownRef = React.useRef<{ x: number; y: number } | null>(null);
@@ -1277,11 +1459,12 @@ function DraggableImageCard({
   const style = {
     transform: CSS.Translate.toString(transform),
   };
-  const isInteractionDisabled = isProcessing;
+  const isBusy = isProcessing || externalProcessing;
+  const isMutationDisabled = isBusy || disableMutatingActions;
 
   const handleAiEdit = React.useCallback(
     async (mode: ImageAiEditMode) => {
-      if (!onAiEdit || isProcessing) return;
+      if (!onAiEdit || isMutationDisabled) return;
       setIsProcessing(true);
       try {
         await onAiEdit(containerId, image, mode);
@@ -1289,7 +1472,7 @@ function DraggableImageCard({
         setIsProcessing(false);
       }
     },
-    [containerId, image, isProcessing, onAiEdit]
+    [containerId, image, isMutationDisabled, onAiEdit]
   );
 
   return (
@@ -1315,7 +1498,7 @@ function DraggableImageCard({
             alt={alt}
             className={cn(
               imageClassName,
-              isInteractionDisabled
+              isMutationDisabled
                 ? "cursor-progress"
                 : "cursor-grab active:cursor-grabbing"
             )}
@@ -1323,14 +1506,14 @@ function DraggableImageCard({
             draggable={false}
             onDragStart={(event) => event.preventDefault()}
             onPointerDown={(event) => {
-              if (isInteractionDisabled) return;
+              if (isMutationDisabled) return;
               pointerDownRef.current = { x: event.clientX, y: event.clientY };
             }}
             onPointerCancel={() => {
               pointerDownRef.current = null;
             }}
             onClick={(event) => {
-              if (isDragging || isInteractionDisabled) return;
+              if (isDragging || isBusy) return;
               const pointerDown = pointerDownRef.current;
               pointerDownRef.current = null;
               if (interactionMode === "select") {
@@ -1346,10 +1529,10 @@ function DraggableImageCard({
               if (dx > 6 || dy > 6) return;
               onPreview(image);
             }}
-            {...(isInteractionDisabled ? {} : attributes)}
-            {...(isInteractionDisabled ? {} : listeners)}
+            {...(isMutationDisabled ? {} : attributes)}
+            {...(isMutationDisabled ? {} : listeners)}
           />
-          {isProcessing ? (
+          {isBusy ? (
             <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/65">
               <div className="flex items-center gap-2 rounded-md bg-background/90 px-2 py-1 text-xs text-foreground shadow">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1357,10 +1540,33 @@ function DraggableImageCard({
               </div>
             </div>
           ) : null}
-          <div className="absolute left-2 top-2 rounded bg-background/80 px-2 py-0.5 text-[10px] uppercase">
-            {badgeLabel}
+          <div className="absolute left-2 top-2 z-20 flex flex-col gap-1">
+            <div className="rounded bg-background/80 px-2 py-0.5 text-[10px] uppercase">
+              {badgeLabel}
+            </div>
+            {isEdited ? (
+              <Badge variant="secondary" className="h-5 px-2 text-[10px] uppercase">
+                Edited
+              </Badge>
+            ) : null}
           </div>
-          <div className="absolute bottom-2 left-2">
+          {onBatchCheckedChange ? (
+            <div
+              className="absolute right-2 top-2 z-30 rounded bg-background/90 p-1 shadow-sm"
+              onClick={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <Checkbox
+                aria-label={`Select ${alt}`}
+                checked={batchChecked}
+                disabled={batchSelectionDisabled}
+                onCheckedChange={(checked) =>
+                  onBatchCheckedChange(checked === true)
+                }
+              />
+            </div>
+          ) : null}
+          <div className="absolute bottom-2 left-2 z-20 flex flex-wrap items-center gap-1">
             {isMain ? (
               <Badge className="h-5 px-2 text-[10px]">Main</Badge>
             ) : showInlineSetMain ? (
@@ -1369,10 +1575,22 @@ function DraggableImageCard({
                 variant="secondary"
                 size="sm"
                 className="h-6 px-2 text-[10px]"
-                disabled={isInteractionDisabled}
+                disabled={isMutationDisabled}
                 onClick={() => onSetMain?.(image)}
               >
                 Set as main
+              </Button>
+            ) : null}
+            {onRevert ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="h-6 px-2 text-[10px]"
+                disabled={isMutationDisabled}
+                onClick={() => onRevert()}
+              >
+                Revert
               </Button>
             ) : null}
           </div>
@@ -1383,10 +1601,10 @@ function DraggableImageCard({
               size="icon"
               className={cn(
                 "absolute right-2 h-7 w-7",
-                isMain ? "top-8" : "top-2",
+                isMain ? "top-8" : onBatchCheckedChange ? "top-11" : "top-2",
                 "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               )}
-              disabled={isInteractionDisabled}
+              disabled={isMutationDisabled}
               onClick={() => onRemove?.()}
             >
               <X className="h-3.5 w-3.5" />
@@ -1405,7 +1623,7 @@ function DraggableImageCard({
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem
-          disabled={isInteractionDisabled}
+          disabled={isBusy}
           onClick={() => void downloadImage(image.previewUrl)}
         >
           <Download className="mr-2 h-4 w-4" />
@@ -1415,19 +1633,19 @@ function DraggableImageCard({
         {onAiEdit ? (
           <>
             <ContextMenuItem
-              disabled={isInteractionDisabled}
+              disabled={isMutationDisabled}
               onClick={() => void handleAiEdit("remove_text_overlay")}
             >
               ✨ 移除文字浮水印
             </ContextMenuItem>
             <ContextMenuItem
-              disabled={isInteractionDisabled}
+              disabled={isMutationDisabled}
               onClick={() => void handleAiEdit("replace_text_overlay_with_english")}
             >
               📝 替換成英文文案
             </ContextMenuItem>
             <ContextMenuItem
-              disabled={isInteractionDisabled}
+              disabled={isMutationDisabled}
               onClick={() => void handleAiEdit("remove_background")}
             >
               🪄 去背
@@ -1437,14 +1655,14 @@ function DraggableImageCard({
         ) : null}
         {!isMain && onSetMain ? (
           <ContextMenuItem
-            disabled={isInteractionDisabled}
+            disabled={isMutationDisabled}
             onClick={() => onSetMain(image)}
           >
             Set as main image
           </ContextMenuItem>
         ) : null}
         <ContextMenuItem
-          disabled={isInteractionDisabled}
+          disabled={isBusy}
           onClick={() => onPreview(image)}
         >
           Preview
@@ -1453,7 +1671,7 @@ function DraggableImageCard({
           <>
             <ContextMenuSeparator />
             <ContextMenuItem
-              disabled={isInteractionDisabled}
+              disabled={isMutationDisabled}
               variant="destructive"
               onClick={() => onRemove()}
             >
@@ -1620,10 +1838,10 @@ async function toPayload(
     category_ids: categoryIds.length ? categoryIds : null,
     category_branch: categoryBranch.length
       ? categoryBranch.map((item) => ({
-          id: item.id,
-          tier: item.tier,
-          is_leaf: item.isLeaf,
-        }))
+        id: item.id,
+        tier: item.tier,
+        is_leaf: item.isLeaf,
+      }))
       : null,
     title: toNullableString(normalizedState.title),
     description: toNullableString(normalizedState.description),
@@ -1769,8 +1987,8 @@ function validatePublishPayload(
 
   const categoryIds = Array.isArray(payload.category_ids)
     ? payload.category_ids.filter(
-        (item): item is number => typeof item === "number" && Number.isFinite(item)
-      )
+      (item): item is number => typeof item === "number" && Number.isFinite(item)
+    )
     : [];
   if (!categoryIds.length) {
     return "At least one category is required.";
@@ -1778,17 +1996,17 @@ function validatePublishPayload(
 
   const categoryBranch = Array.isArray(payload.category_branch)
     ? payload.category_branch.filter(
-        (
-          item
-        ): item is {
-          id: number;
-          tier?: number | null;
-          is_leaf?: boolean;
-        } =>
-          !!item &&
-          typeof item.id === "number" &&
-          Number.isFinite(item.id)
-      )
+      (
+        item
+      ): item is {
+        id: number;
+        tier?: number | null;
+        is_leaf?: boolean;
+      } =>
+        !!item &&
+        typeof item.id === "number" &&
+        Number.isFinite(item.id)
+    )
     : [];
   if (!categoryBranch.length) {
     return "Category branch is required.";
@@ -1822,10 +2040,10 @@ function validatePublishPayload(
     : [];
   const variationImages = Array.isArray(payload.variations)
     ? payload.variations.flatMap((variation) =>
-        Array.isArray(variation?.images)
-          ? variation.images.filter((item): item is string => typeof item === "string")
-          : []
-      )
+      Array.isArray(variation?.images)
+        ? variation.images.filter((item): item is string => typeof item === "string")
+        : []
+    )
     : [];
   const imageUrls = uniqueStringArray([...mainImages, ...variationImages]);
   const usableImageUrls = imageUrls.filter(isUsableImageUrl);
@@ -1995,6 +2213,12 @@ export function AiProductDraftShow() {
   >({});
   const [previewImage, setPreviewImage] = React.useState<PreviewImageState | null>(null);
   const [aiEditPreview, setAiEditPreview] = React.useState<AiEditPreviewState | null>(null);
+  const [selectedImageKeys, setSelectedImageKeys] = React.useState<Set<BatchSelectionKey>>(
+    () => new Set<BatchSelectionKey>()
+  );
+  const [batchConfirmMode, setBatchConfirmMode] = React.useState<ImageAiEditMode | null>(null);
+  const [batchEditState, setBatchEditState] = React.useState<BatchEditState | null>(null);
+  const [lastBatchSession, setLastBatchSession] = React.useState<LastBatchSession | null>(null);
   const [aiImageModel, setAiImageModel] = React.useState<GeminiImageEditModel>(
     DEFAULT_GEMINI_IMAGE_EDIT_MODEL
   );
@@ -2011,9 +2235,11 @@ export function AiProductDraftShow() {
   const editSnapshotRef = React.useRef<EditSnapshot | null>(null);
   const editStateRef = React.useRef<EditState | null>(null);
   const aiEditPreviewRef = React.useRef<AiEditPreviewState | null>(null);
+  const lastBatchSessionRef = React.useRef<LastBatchSession | null>(null);
   const imageResolutionCacheRef = React.useRef<Map<string, string>>(new Map());
   const uploadedDraftImageUrlCacheRef = React.useRef<Map<string, string>>(new Map());
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const isMountedRef = React.useRef(true);
 
   const draftPayload = React.useMemo(() => draft?.draft ?? null, [draft]);
   const categoryQueryTrimmed = React.useMemo(() => categoryQuery.trim(), [categoryQuery]);
@@ -2023,6 +2249,34 @@ export function AiProductDraftShow() {
       GEMINI_IMAGE_EDIT_MODELS[0],
     [aiImageModel]
   );
+  const batchTargets = React.useMemo(
+    () => (editState ? buildBatchEditTargets(editState) : []),
+    [editState]
+  );
+  const selectedBatchTargets = React.useMemo(
+    () => batchTargets.filter((item) => selectedImageKeys.has(item.key)),
+    [batchTargets, selectedImageKeys]
+  );
+  const selectedBatchTargetCount = selectedBatchTargets.length;
+  const activeBatchKeys = React.useMemo(
+    () => new Set(batchEditState?.activeKeys ?? []),
+    [batchEditState]
+  );
+  const lastBatchAppliedItemByKey = React.useMemo(
+    () =>
+      new Map(
+        (lastBatchSession?.appliedItems ?? []).map((item) => [item.key, item] as const)
+      ),
+    [lastBatchSession]
+  );
+  const lastBatchAppliedKeys = React.useMemo(
+    () => new Set(lastBatchSession?.appliedKeys ?? []),
+    [lastBatchSession]
+  );
+  const lastBatchAppliedCount = lastBatchSession?.appliedItems.length ?? 0;
+  const isBatchEditing = batchEditState?.isRunning ?? false;
+  const hasBatchFailures = (batchEditState?.failures.length ?? 0) > 0;
+  const hasLastBatchAppliedEdits = lastBatchAppliedCount > 0;
 
   const refresh = React.useCallback(async () => {
     if (!draftId) return;
@@ -2047,6 +2301,13 @@ export function AiProductDraftShow() {
   }, [draftId]);
 
   React.useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
     const storedValue = window.localStorage.getItem(AI_IMAGE_MODEL_STORAGE_KEY);
     if (!storedValue) return;
     const isSupported = GEMINI_IMAGE_EDIT_MODELS.some((item) => item.value === storedValue);
@@ -2063,13 +2324,14 @@ export function AiProductDraftShow() {
     if (!draftId) return;
     if (!draft) return;
     if (isTerminalStatus(draft.status)) return;
+    if (isBatchEditing) return;
 
     const timer = window.setInterval(() => {
       void refresh();
     }, 2500);
 
     return () => window.clearInterval(timer);
-  }, [draft, draftId, refresh]);
+  }, [draft, draftId, isBatchEditing, refresh]);
 
   React.useEffect(() => {
     if (!categoryQueryTrimmed.length) {
@@ -2120,6 +2382,37 @@ export function AiProductDraftShow() {
     },
     []
   );
+
+  const clearLastBatchSession = React.useCallback(() => {
+    const currentSession = lastBatchSessionRef.current;
+    if (currentSession) {
+      currentSession.appliedItems.forEach((item) => {
+        revokeLocalImagePreview(item.previousImage);
+      });
+    }
+    lastBatchSessionRef.current = null;
+    setLastBatchSession(null);
+  }, []);
+
+  const removeLastBatchAppliedItem = React.useCallback((key: BatchSelectionKey) => {
+    setLastBatchSession((prev) => {
+      if (!prev) return prev;
+      const removedItem = prev.appliedItems.find((item) => item.key === key);
+      if (!removedItem) return prev;
+
+      const nextItems = prev.appliedItems.filter((item) => item.key !== key);
+      const nextSession =
+        nextItems.length > 0
+          ? {
+            ...prev,
+            appliedItems: nextItems,
+            appliedKeys: nextItems.map((item) => item.key),
+          }
+          : null;
+      lastBatchSessionRef.current = nextSession;
+      return nextSession;
+    });
+  }, []);
 
   const closeAiEditPreview = React.useCallback((revokeProcessedPreview: boolean) => {
     setAiEditPreview((prev) => {
@@ -2222,6 +2515,8 @@ export function AiProductDraftShow() {
   );
 
   React.useEffect(() => {
+    if (isBatchEditing) return;
+
     if (!draftPayload) {
       setEditState((prev) => {
         revokeNewImagePreviews(prev);
@@ -2237,6 +2532,10 @@ export function AiProductDraftShow() {
       setSelectedCategoryPreview(null);
       setVariationImageUrlInputs({});
       setSelectedVariationImageIds({});
+      setSelectedImageKeys(new Set<BatchSelectionKey>());
+      setBatchConfirmMode(null);
+      setBatchEditState(null);
+      clearLastBatchSession();
       editSnapshotRef.current = null;
       uploadedDraftImageUrlCacheRef.current = new Map();
       return;
@@ -2258,8 +2557,12 @@ export function AiProductDraftShow() {
     setSelectedCategoryPreview(null);
     setVariationImageUrlInputs({});
     setSelectedVariationImageIds({});
+    setSelectedImageKeys(new Set<BatchSelectionKey>());
+    setBatchConfirmMode(null);
+    setBatchEditState(null);
+    clearLastBatchSession();
     uploadedDraftImageUrlCacheRef.current = new Map();
-  }, [closeAiEditPreview, draftPayload]);
+  }, [clearLastBatchSession, closeAiEditPreview, draftPayload, isBatchEditing]);
 
   React.useEffect(() => {
     editStateRef.current = editState;
@@ -2268,6 +2571,58 @@ export function AiProductDraftShow() {
   React.useEffect(() => {
     aiEditPreviewRef.current = aiEditPreview;
   }, [aiEditPreview]);
+
+  React.useEffect(() => {
+    lastBatchSessionRef.current = lastBatchSession;
+  }, [lastBatchSession]);
+
+  React.useEffect(() => {
+    if (!lastBatchSession || !editState) return;
+
+    const staleItems = lastBatchSession.appliedItems.filter((item) => {
+      const currentImage = findImageInContainer(editState, item.containerId, item.imageId);
+      return !currentImage || currentImage.previewUrl !== item.appliedPreviewUrl;
+    });
+    if (!staleItems.length) return;
+
+    staleItems.forEach((item) => {
+      revokeLocalImagePreview(item.previousImage);
+    });
+
+    const staleKeys = new Set(staleItems.map((item) => item.key));
+    const nextItems = lastBatchSession.appliedItems.filter((item) => !staleKeys.has(item.key));
+    const nextSession =
+      nextItems.length > 0
+        ? {
+          ...lastBatchSession,
+          appliedItems: nextItems,
+          appliedKeys: nextItems.map((item) => item.key),
+        }
+        : null;
+    lastBatchSessionRef.current = nextSession;
+    setLastBatchSession(nextSession);
+  }, [editState, lastBatchSession]);
+
+  React.useEffect(() => {
+    if (!batchTargets.length) {
+      setSelectedImageKeys(new Set<BatchSelectionKey>());
+      return;
+    }
+
+    const validKeys = new Set(batchTargets.map((item) => item.key));
+    setSelectedImageKeys((prev) => {
+      let changed = false;
+      const next = new Set<BatchSelectionKey>();
+      prev.forEach((key) => {
+        if (validKeys.has(key)) {
+          next.add(key);
+          return;
+        }
+        changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [batchTargets]);
 
   const imageResolutionTargets = React.useMemo(() => {
     if (!editState) return [] as Array<{ id: string; previewUrl: string }>;
@@ -2329,13 +2684,14 @@ export function AiProductDraftShow() {
 
   React.useEffect(() => {
     return () => {
+      clearLastBatchSession();
       revokeNewImagePreviews(editStateRef.current);
       revokeNewVariationPreviews(editStateRef.current);
       if (aiEditPreviewRef.current) {
         URL.revokeObjectURL(aiEditPreviewRef.current.processedPreviewUrl);
       }
     };
-  }, []);
+  }, [clearLastBatchSession]);
 
   const hasCategoryIds = (editState?.categoryIds.length ?? 0) > 0;
   const publishBlockedByCategory = !hasCategoryIds;
@@ -2437,6 +2793,7 @@ export function AiProductDraftShow() {
         revokeNewImagePreviews(prev);
         return createEditState(editSnapshotRef.current as EditSnapshot);
       });
+      clearLastBatchSession();
       open?.({ type: "success", message: "Draft updated" });
       await refresh();
     } catch (e) {
@@ -2507,35 +2864,40 @@ export function AiProductDraftShow() {
     setCategorySearchError(null);
   };
 
+  const setBatchImageSelected = React.useCallback(
+    (containerId: ImageContainerId, imageId: string, checked: boolean) => {
+      const key = createBatchSelectionKey(containerId, imageId);
+      setSelectedImageKeys((prev) => {
+        const next = new Set(prev);
+        if (checked) {
+          next.add(key);
+        } else {
+          next.delete(key);
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const clearBatchSelection = React.useCallback(() => {
+    setSelectedImageKeys(new Set<BatchSelectionKey>());
+  }, []);
+
+  const openBatchEditConfirm = React.useCallback(
+    (mode: ImageAiEditMode) => {
+      if (isBatchEditing || selectedBatchTargetCount === 0) return;
+      setBatchConfirmMode(mode);
+    },
+    [isBatchEditing, selectedBatchTargetCount]
+  );
+
   const onAiEditImage = React.useCallback(
     async (containerId: ImageContainerId, image: EditImageItem, mode: ImageAiEditMode) => {
-      const prompt =
-        mode === "remove_text_overlay"
-          ? PROMPT_REMOVE_TEXT_OVERLAY
-          : mode === "replace_text_overlay_with_english"
-            ? PROMPT_REPLACE_TEXT_OVERLAY_WITH_ENGLISH
-            : PROMPT_REMOVE_BACKGROUND;
       const actionLabel = imageAiEditModeLabel(mode);
 
       try {
-        const processedBlob = await aiEditImage(image.previewUrl, prompt, {
-          model: aiImageModel,
-        });
-        if (!processedBlob.type.startsWith("image/")) {
-          throw new Error("Gemini did not return a valid image.");
-        }
-        const extension =
-          processedBlob.type === "image/png"
-            ? "png"
-            : processedBlob.type === "image/webp"
-              ? "webp"
-              : "jpg";
-        const file = new File(
-          [processedBlob],
-          `ai-edit-${mode}-${Date.now()}.${extension}`,
-          { type: processedBlob.type }
-        );
-        const processedPreviewUrl = URL.createObjectURL(file);
+        const { file, previewUrl } = await processAiEditForImage(image, mode, aiImageModel);
 
         setPreviewImage(null);
         setAiEditPreview((prev) => {
@@ -2547,7 +2909,7 @@ export function AiProductDraftShow() {
             imageId: image.id,
             mode,
             originalUrl: image.previewUrl,
-            processedPreviewUrl,
+            processedPreviewUrl: previewUrl,
             processedFile: file,
           };
         });
@@ -2562,6 +2924,341 @@ export function AiProductDraftShow() {
     },
     [aiImageModel, open]
   );
+
+  const onStartBatchEdit = React.useCallback(async () => {
+    if (!batchConfirmMode || isBatchEditing || selectedBatchTargets.length === 0) return;
+
+    const mode = batchConfirmMode;
+    const targets = selectedBatchTargets.map((item) => ({ ...item }));
+    const concurrency = Math.min(BATCH_EDIT_CONCURRENCY, targets.length);
+    if (concurrency === 0) return;
+
+    setBatchConfirmMode(null);
+    setPreviewImage(null);
+    closeAiEditPreview(true);
+    clearLastBatchSession();
+    setBatchEditState({
+      mode,
+      total: targets.length,
+      completed: 0,
+      succeeded: 0,
+      failed: 0,
+      active: 0,
+      activeKeys: [],
+      failures: [],
+      isRunning: true,
+    });
+
+    let cursor = 0;
+    const progress = {
+      completed: 0,
+      succeeded: 0,
+      failed: 0,
+      active: 0,
+      activeKeys: [] as BatchSelectionKey[],
+      failures: [] as BatchEditFailureItem[],
+    };
+
+    const runTarget = async (target: BatchEditTarget) => {
+      progress.active += 1;
+      progress.activeKeys = [...progress.activeKeys, target.key];
+      if (isMountedRef.current) {
+        setBatchEditState((prev) =>
+          prev
+            ? {
+              ...prev,
+              active: progress.active,
+              activeKeys: [...progress.activeKeys],
+            }
+            : prev
+        );
+      }
+
+      try {
+        const { file, previewUrl } = await processAiEditForImage(target.image, mode, aiImageModel);
+        if (!isMountedRef.current) {
+          URL.revokeObjectURL(previewUrl);
+          return;
+        }
+
+        const currentState = editStateRef.current;
+        const previousImage = currentState
+          ? findImageInContainer(currentState, target.containerId, target.imageId)
+          : null;
+        if (!currentState || !previousImage) {
+          URL.revokeObjectURL(previewUrl);
+          progress.completed += 1;
+          progress.failed += 1;
+          progress.active = Math.max(progress.active - 1, 0);
+          progress.activeKeys = progress.activeKeys.filter((key) => key !== target.key);
+          progress.failures = [
+            ...progress.failures,
+            {
+              key: target.key,
+              label: target.label,
+              message: "Target image is no longer available.",
+            },
+          ];
+          setBatchEditState((prev) =>
+            prev
+              ? {
+                ...prev,
+                completed: progress.completed,
+                failed: progress.failed,
+                active: progress.active,
+                activeKeys: [...progress.activeKeys],
+                failures: [...progress.failures],
+              }
+              : prev
+          );
+          return;
+        }
+
+        updateEditState((prev) => {
+          console.log("[batch-edit] replacing image", {
+            containerId: target.containerId,
+            imageId: target.imageId,
+            newPreviewUrl: previewUrl,
+            mainImageIds: prev.images.map((i) => i.id),
+            variationImageIds: prev.variations.map((v) => ({
+              variationId: v.id,
+              imageIds: v.images.map((i) => i.id),
+            })),
+          });
+          const result = replaceImageWithUploaded(
+            prev,
+            target.containerId,
+            target.imageId,
+            file,
+            previewUrl,
+            { revokeReplacedPreview: false }
+          );
+          if (result === prev) {
+            console.error(
+              "[batch-edit] ⚠️ replaceImageWithUploaded returned UNCHANGED state — image not found!",
+              { containerId: target.containerId, imageId: target.imageId }
+            );
+          } else {
+            console.log("[batch-edit] ✅ image replaced successfully");
+          }
+          return result;
+        });
+        setLastBatchSession((prev) => {
+          const nextItem: LastBatchAppliedItem = {
+            key: target.key,
+            containerId: target.containerId,
+            imageId: target.imageId,
+            label: target.label,
+            previousImage: cloneEditImageItem(previousImage),
+            appliedPreviewUrl: previewUrl,
+          };
+          const nextItems = [
+            ...(prev?.appliedItems ?? []).filter((item) => item.key !== target.key),
+            nextItem,
+          ];
+          return {
+            mode,
+            appliedItems: nextItems,
+            appliedKeys: nextItems.map((item) => item.key),
+          };
+        });
+        progress.completed += 1;
+        progress.succeeded += 1;
+        progress.active = Math.max(progress.active - 1, 0);
+        progress.activeKeys = progress.activeKeys.filter((key) => key !== target.key);
+        setBatchEditState((prev) =>
+          prev
+            ? {
+              ...prev,
+              completed: progress.completed,
+              succeeded: progress.succeeded,
+              active: progress.active,
+              activeKeys: [...progress.activeKeys],
+            }
+            : prev
+        );
+      } catch (error) {
+        if (!isMountedRef.current) return;
+        const message = error instanceof Error ? error.message : "Unknown error";
+        progress.completed += 1;
+        progress.failed += 1;
+        progress.active = Math.max(progress.active - 1, 0);
+        progress.activeKeys = progress.activeKeys.filter((key) => key !== target.key);
+        progress.failures = [
+          ...progress.failures,
+          {
+            key: target.key,
+            label: target.label,
+            message,
+          },
+        ];
+        setBatchEditState((prev) =>
+          prev
+            ? {
+              ...prev,
+              completed: progress.completed,
+              failed: progress.failed,
+              active: progress.active,
+              activeKeys: [...progress.activeKeys],
+              failures: [...progress.failures],
+            }
+            : prev
+        );
+      }
+    };
+
+    const worker = async () => {
+      while (true) {
+        const currentIndex = cursor;
+        cursor += 1;
+        if (currentIndex >= targets.length) return;
+        await runTarget(targets[currentIndex]);
+      }
+    };
+
+    try {
+      await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown batch error";
+      if (!isMountedRef.current) return;
+
+      const fallbackFailure: BatchEditFailureItem = {
+        key: `batch:${Date.now()}`,
+        label: "Batch AI edit",
+        message,
+      };
+      const summaryState: BatchEditState = {
+        mode,
+        total: targets.length,
+        completed: progress.completed,
+        succeeded: progress.succeeded,
+        failed: progress.failed + 1,
+        active: 0,
+        activeKeys: [],
+        failures: [...progress.failures, fallbackFailure],
+        isRunning: false,
+      };
+      setBatchEditState(summaryState);
+      open?.({
+        type: "error",
+        message: `${imageAiEditModeLabel(mode)} failed`,
+        description: message,
+      });
+      return;
+    }
+
+    if (!isMountedRef.current) return;
+
+    const summaryState: BatchEditState = {
+      mode,
+      total: targets.length,
+      completed: progress.completed,
+      succeeded: progress.succeeded,
+      failed: progress.failed,
+      active: 0,
+      activeKeys: [],
+      failures: [...progress.failures],
+      isRunning: false,
+    };
+    setBatchEditState(summaryState);
+
+    open?.({
+      type: summaryState.failed > 0 ? "error" : "success",
+      message:
+        summaryState.failed > 0
+          ? `${imageAiEditModeLabel(summaryState.mode)} completed with failures`
+          : `${imageAiEditModeLabel(summaryState.mode)} completed`,
+      description:
+        summaryState.failed > 0
+          ? `${summaryState.succeeded} succeeded, ${summaryState.failed} failed.`
+          : `${summaryState.succeeded} image(s) updated.`,
+    });
+  }, [
+    aiImageModel,
+    batchConfirmMode,
+    clearLastBatchSession,
+    closeAiEditPreview,
+    isBatchEditing,
+    open,
+    selectedBatchTargets,
+    updateEditState,
+  ]);
+
+  const onRevertLastBatchImage = React.useCallback(
+    (key: BatchSelectionKey) => {
+      const sessionItem = lastBatchAppliedItemByKey.get(key);
+      if (!sessionItem) return;
+
+      const currentState = editStateRef.current;
+      if (
+        currentState &&
+        isImageInContainer(currentState, sessionItem.containerId, sessionItem.imageId)
+      ) {
+        updateEditState((prev) =>
+          replaceImageWithExistingState(
+            prev,
+            sessionItem.containerId,
+            sessionItem.imageId,
+            sessionItem.previousImage
+          )
+        );
+      } else {
+        revokeLocalImagePreview(sessionItem.previousImage);
+      }
+
+      removeLastBatchAppliedItem(key);
+      open?.({
+        type: "success",
+        message: "Reverted last batch image",
+        description: sessionItem.label,
+      });
+    },
+    [lastBatchAppliedItemByKey, open, removeLastBatchAppliedItem, updateEditState]
+  );
+
+  const onRevertAllFromLastBatch = React.useCallback(() => {
+    const session = lastBatchSessionRef.current;
+    if (!session) return;
+
+    const currentState = editStateRef.current;
+    const restorableItems = currentState
+      ? session.appliedItems.filter((item) =>
+        isImageInContainer(currentState, item.containerId, item.imageId)
+      )
+      : [];
+    const restorableKeys = new Set(restorableItems.map((item) => item.key));
+    const skippedItems = session.appliedItems.filter((item) => !restorableKeys.has(item.key));
+
+    if (restorableItems.length > 0) {
+      updateEditState((prev) =>
+        restorableItems.reduce(
+          (nextState, item) =>
+            replaceImageWithExistingState(
+              nextState,
+              item.containerId,
+              item.imageId,
+              item.previousImage
+            ),
+          prev
+        )
+      );
+    }
+
+    skippedItems.forEach((item) => {
+      revokeLocalImagePreview(item.previousImage);
+    });
+
+    setLastBatchSession(null);
+    lastBatchSessionRef.current = null;
+    open?.({
+      type: "success",
+      message: "Reverted last batch",
+      description:
+        skippedItems.length > 0
+          ? `${restorableItems.length} restored, ${skippedItems.length} skipped.`
+          : `${restorableItems.length} image(s) restored.`,
+    });
+  }, [open, updateEditState]);
 
   const onAcceptAiEditPreview = React.useCallback(() => {
     const current = aiEditPreviewRef.current;
@@ -2602,10 +3299,10 @@ export function AiProductDraftShow() {
   const previewImageIsMain =
     previewImage && editState
       ? isMainImageSelection(
-          editState.mainImageSelection,
-          previewImage.containerId,
-          previewImage.imageId
-        )
+        editState.mainImageSelection,
+        previewImage.containerId,
+        previewImage.imageId
+      )
       : false;
 
   if (!draftId) {
@@ -2631,11 +3328,15 @@ export function AiProductDraftShow() {
             <Button
               variant="outline"
               onClick={() => navigate("/products/ai-import")}
-              disabled={isDeleting}
+              disabled={isDeleting || isBatchEditing}
             >
               New draft
             </Button>
-            <Button variant="outline" onClick={() => void refresh()} disabled={isDeleting}>
+            <Button
+              variant="outline"
+              onClick={() => void refresh()}
+              disabled={isDeleting || isBatchEditing}
+            >
               Refresh
             </Button>
             <Button
@@ -2758,15 +3459,24 @@ export function AiProductDraftShow() {
                               revokeNewVariationPreviews(prev);
                               return createEditState(editSnapshotRef.current as EditSnapshot);
                             });
+                            clearLastBatchSession();
                           }}
-                          disabled={!editState || !editState.isDirty || isDeleting}
+                          disabled={
+                            !editState || !editState.isDirty || isDeleting || isBatchEditing
+                          }
                         >
-                          Reset
+                          重設整份草稿
                         </Button>
                         <Button
                           variant="secondary"
                           onClick={() => void onSave()}
-                          disabled={!editState || !editState.isDirty || isSaving || isDeleting}
+                          disabled={
+                            !editState ||
+                            !editState.isDirty ||
+                            isSaving ||
+                            isDeleting ||
+                            isBatchEditing
+                          }
                         >
                           {isSaving ? "Saving..." : "Save changes"}
                         </Button>
@@ -2777,6 +3487,7 @@ export function AiProductDraftShow() {
                             isRejecting ||
                             isSaving ||
                             isDeleting ||
+                            isBatchEditing ||
                             publishBlockedByCategory
                           }
                         >
@@ -2785,7 +3496,7 @@ export function AiProductDraftShow() {
                         <Button
                           variant="secondary"
                           onClick={() => void onReject()}
-                          disabled={isPublishing || isRejecting || isDeleting}
+                          disabled={isPublishing || isRejecting || isDeleting || isBatchEditing}
                         >
                           {isRejecting ? "Rejecting..." : "Reject"}
                         </Button>
@@ -2799,384 +3510,632 @@ export function AiProductDraftShow() {
                   </div>
 
                   {editState ? (
-                    <DndContext
-                      sensors={dndSensors}
-                      collisionDetection={(args) => {
-                        const dragType = args.active.data.current?.dragType;
-
-                        if (dragType === "image_item") {
-                          const imageContainers = args.droppableContainers.filter(
-                            (container) =>
-                              container.data.current?.dropType === "image_container"
-                          );
-                          const byPointer = pointerWithin({
-                            ...args,
-                            droppableContainers: imageContainers,
-                          });
-                          if (byPointer.length) return byPointer;
-                          return closestCenter({
-                            ...args,
-                            droppableContainers: imageContainers,
-                          });
-                        }
-
-                        if (dragType === "variation_row") {
-                          const sortableContainers = args.droppableContainers.filter(
-                            (container) =>
-                              container.data.current?.dropType !== "image_container"
-                          );
-                          return closestCenter({
-                            ...args,
-                            droppableContainers: sortableContainers,
-                          });
-                        }
-
-                        return closestCenter(args);
-                      }}
-                      onDragStart={onDragStart}
-                      onDragCancel={onDragCancel}
-                      onDragEnd={onDragEnd}
-                    >
-                      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <>
+                      {(selectedBatchTargetCount > 0 || batchEditState || hasLastBatchAppliedEdits) && (
                         <Card>
-                          <CardHeader>
-                            <CardTitle className="text-base">Editable Draft</CardTitle>
-                          </CardHeader>
-                          <CardContent>
-                            <div className="flex flex-col gap-4">
-                              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                                <div className="flex flex-col gap-2">
-                                  <Label htmlFor="draft-title">Title</Label>
-                                  <Input
-                                    id="draft-title"
-                                    value={editState.title}
-                                    onChange={(e) =>
-                                      updateEditState((prev) => ({
-                                        ...prev,
-                                        title: e.target.value,
-                                      }))
-                                    }
-                                    placeholder="Enter product title"
-                                  />
+                          <CardHeader className="gap-3">
+                            <CardTitle className="text-base">Batch AI Edit</CardTitle>
+                            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                              <div className="space-y-1 text-sm">
+                                <div className="font-medium">
+                                  {selectedBatchTargetCount} image(s) selected
                                 </div>
-
-                                <div className="flex flex-col gap-2">
-                                  <Label htmlFor="draft-currency">Currency</Label>
-                                  <Select
-                                    value={editState.currency || undefined}
-                                    onValueChange={(value) =>
-                                      updateEditState((prev) => ({
-                                        ...prev,
-                                        currency: value,
-                                      }))
-                                    }
-                                  >
-                                    <SelectTrigger id="draft-currency">
-                                      <SelectValue placeholder="Select currency" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      {CURRENCY_OPTIONS.map((option) => (
-                                        <SelectItem key={option} value={option}>
-                                          {option}
-                                        </SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                              </div>
-
-                              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                                <div className="flex flex-col gap-2">
-                                  <Label htmlFor="draft-price">Price</Label>
-                                  <Input
-                                    id="draft-price"
-                                    type="number"
-                                    step="0.01"
-                                    inputMode="decimal"
-                                    value={editState.price}
-                                    onChange={(e) =>
-                                      updateEditState((prev) => ({
-                                        ...prev,
-                                        price: e.target.value,
-                                      }))
-                                    }
-                                    placeholder="0.00"
-                                  />
-                                </div>
-
-                                <div className="flex flex-col gap-2">
-                                  <Label htmlFor="draft-tax-rate">Tax Rate (0~1)</Label>
-                                  <Input
-                                    id="draft-tax-rate"
-                                    type="number"
-                                    step="0.01"
-                                    min="0"
-                                    max="1"
-                                    inputMode="decimal"
-                                    value={editState.taxRate}
-                                    onChange={(e) =>
-                                      updateEditState((prev) => ({
-                                        ...prev,
-                                        taxRate: e.target.value,
-                                      }))
-                                    }
-                                    placeholder="0"
-                                  />
-                                </div>
-
-                                <div className="flex flex-col gap-2">
-                                  <Label htmlFor="draft-shipping-fee">Shipping Fee</Label>
-                                  <Input
-                                    id="draft-shipping-fee"
-                                    type="number"
-                                    step="0.01"
-                                    min="0"
-                                    inputMode="decimal"
-                                    value={editState.shippingFee}
-                                    onChange={(e) =>
-                                      updateEditState((prev) => ({
-                                        ...prev,
-                                        shippingFee: e.target.value,
-                                      }))
-                                    }
-                                    placeholder="0"
-                                  />
-                                </div>
-                              </div>
-
-                              <div className="flex flex-col gap-2">
-                                <Label htmlFor="draft-category-search">Category</Label>
-                                <Input
-                                  id="draft-category-search"
-                                  value={categoryQuery}
-                                  onChange={(event) => setCategoryQuery(event.target.value)}
-                                  placeholder="Search categories (e.g. Mice)"
-                                  autoComplete="off"
-                                  className={cn(
-                                    isCategorySearching
-                                      ? "border-primary/60 ring-2 ring-primary/20"
-                                      : ""
-                                  )}
-                                />
                                 <div className="text-xs text-muted-foreground">
-                                  Search and select one category candidate. Saving stores
-                                  <code> category_ids</code> and <code> category_branch</code>.
+                                  Batch mode runs repeated direct requests in this page. Keep the
+                                  tab open until progress completes.
                                 </div>
-                                {isCategorySearching ? (
-                                  <div className="flex items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-sm font-medium text-primary">
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    <span>Searching categories...</span>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  size="sm"
+                                  disabled={selectedBatchTargetCount === 0 || isBatchEditing}
+                                  onClick={() => openBatchEditConfirm("remove_text_overlay")}
+                                >
+                                  移除文字浮水印
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  size="sm"
+                                  disabled={selectedBatchTargetCount === 0 || isBatchEditing}
+                                  onClick={() =>
+                                    openBatchEditConfirm("replace_text_overlay_with_english")
+                                  }
+                                >
+                                  替換成英文文案
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  size="sm"
+                                  disabled={selectedBatchTargetCount === 0 || isBatchEditing}
+                                  onClick={() => openBatchEditConfirm("remove_background")}
+                                >
+                                  去背
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={selectedImageKeys.size === 0 || isBatchEditing}
+                                  onClick={clearBatchSelection}
+                                >
+                                  Clear selection
+                                </Button>
+                              </div>
+                            </div>
+                          </CardHeader>
+                          {batchEditState || hasLastBatchAppliedEdits ? (
+                            <CardContent className="space-y-3">
+                              {batchEditState ? (
+                                <>
+                                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                                    <div className="rounded-md border bg-muted/20 px-3 py-2">
+                                      <div className="text-[11px] uppercase text-muted-foreground">
+                                        Mode
+                                      </div>
+                                      <div className="text-sm font-medium">
+                                        {imageAiEditModeLabel(batchEditState.mode)}
+                                      </div>
+                                    </div>
+                                    <div className="rounded-md border bg-muted/20 px-3 py-2">
+                                      <div className="text-[11px] uppercase text-muted-foreground">
+                                        Progress
+                                      </div>
+                                      <div className="text-sm font-medium">
+                                        {batchEditState.completed}/{batchEditState.total}
+                                      </div>
+                                    </div>
+                                    <div className="rounded-md border bg-muted/20 px-3 py-2">
+                                      <div className="text-[11px] uppercase text-muted-foreground">
+                                        Active
+                                      </div>
+                                      <div className="text-sm font-medium">{batchEditState.active}</div>
+                                    </div>
+                                    <div className="rounded-md border bg-muted/20 px-3 py-2">
+                                      <div className="text-[11px] uppercase text-muted-foreground">
+                                        Succeeded
+                                      </div>
+                                      <div className="text-sm font-medium text-emerald-600">
+                                        {batchEditState.succeeded}
+                                      </div>
+                                    </div>
+                                    <div className="rounded-md border bg-muted/20 px-3 py-2">
+                                      <div className="text-[11px] uppercase text-muted-foreground">
+                                        Failed
+                                      </div>
+                                      <div className="text-sm font-medium text-destructive">
+                                        {batchEditState.failed}
+                                      </div>
+                                    </div>
                                   </div>
-                                ) : null}
-                                {categorySearchError ? (
-                                  <div className="text-xs text-destructive">
-                                    {categorySearchError}
-                                  </div>
-                                ) : null}
-                                {!isCategorySearching &&
-                                !categorySearchError &&
-                                categoryQueryTrimmed.length > 0 &&
-                                categoryCandidates.length === 0 ? (
-                                  <div className="text-xs text-muted-foreground">
-                                    No categories found.
-                                  </div>
-                                ) : null}
-                                {!isCategorySearching && categoryCandidates.length > 0 ? (
-                                  <div className="max-h-64 overflow-auto rounded-md border">
-                                    {categoryCandidates.map((candidate) => {
-                                      const branchPath = candidate.branch
-                                        .map((node) => node.label.trim())
-                                        .filter((label) => label.length > 0)
-                                        .join(" > ");
-                                      const matchedPath = candidate.matched_path
-                                        .map((item) => item.trim())
-                                        .filter((item) => item.length > 0)
-                                        .join(" > ");
-                                      return (
-                                        <button
-                                          key={`${candidate.leaf_id}-${candidate.leaf_name}`}
-                                          type="button"
-                                          className={cn(
-                                            "w-full border-b px-3 py-2 text-left text-sm last:border-b-0",
-                                            "hover:bg-muted/60"
-                                          )}
-                                          onClick={() => onSelectCategoryCandidate(candidate)}
-                                        >
-                                          <div className="font-medium">{candidate.leaf_label}</div>
-                                          <div className="text-xs text-muted-foreground">
-                                            {branchPath || "No branch path"}
-                                          </div>
-                                          {matchedPath.length ? (
-                                            <div className="text-[11px] text-muted-foreground/90">
-                                              Match: {matchedPath}
-                                            </div>
-                                          ) : null}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                ) : null}
-
-                                <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs">
-                                  {editState.categoryIds.length ? (
-                                    <div className="flex flex-col gap-2">
-                                      <div className="flex items-center justify-between gap-2">
-                                        <div className="font-medium">
-                                          {selectedCategoryPreview?.leafLabel ?? "Selected category"}
-                                        </div>
+                                  <div className="space-y-2">
+                                    <div className="h-2 overflow-hidden rounded-full bg-muted">
+                                      <div
+                                        className="h-full rounded-full bg-primary transition-all"
+                                        style={{
+                                          width: `${batchEditState.total > 0
+                                            ? (batchEditState.completed / batchEditState.total) * 100
+                                            : 0}%`,
+                                        }}
+                                      />
+                                    </div>
+                                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                                      <span>
+                                        {batchEditState.isRunning
+                                          ? "Batch edit is running."
+                                          : hasBatchFailures
+                                            ? "Batch edit completed with failures."
+                                            : "Batch edit completed."}
+                                      </span>
+                                      {!batchEditState.isRunning ? (
                                         <Button
                                           type="button"
                                           variant="ghost"
                                           size="sm"
                                           className="h-7 px-2 text-xs"
-                                          onClick={onClearCategorySelection}
+                                          onClick={() => setBatchEditState(null)}
                                         >
-                                          Clear
+                                          Dismiss summary
                                         </Button>
-                                      </div>
-                                      {selectedCategoryPreview?.branchPath ? (
-                                        <div className="text-muted-foreground">
-                                          {selectedCategoryPreview.branchPath}
-                                        </div>
                                       ) : null}
-                                      <div className="text-muted-foreground">
-                                        Category IDs: {editState.categoryIds.join(", ")}
-                                      </div>
                                     </div>
-                                  ) : (
-                                    <div className="text-destructive">
-                                      No category selected. Category is required before publish.
+                                  </div>
+                                </>
+                              ) : null}
+                              {hasLastBatchAppliedEdits ? (
+                                <div className="flex flex-col gap-3 rounded-md border bg-muted/20 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                                  <div className="space-y-1 text-sm">
+                                    <div className="font-medium">
+                                      Latest batch changed {lastBatchAppliedCount} image(s)
                                     </div>
-                                  )}
+                                    <div className="text-xs text-muted-foreground">
+                                      Edited badges and Revert buttons are only tracked for the most
+                                      recent batch session.
+                                    </div>
+                                  </div>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={isBatchEditing}
+                                    onClick={onRevertAllFromLastBatch}
+                                  >
+                                    Revert all from last batch
+                                  </Button>
                                 </div>
-                              </div>
+                              ) : null}
+                              {batchEditState?.failures.length ? (
+                                <div className="space-y-2">
+                                  <div className="text-xs font-medium uppercase text-muted-foreground">
+                                    Failures
+                                  </div>
+                                  <div className="max-h-40 space-y-2 overflow-auto rounded-md border p-3">
+                                    {batchEditState.failures.map((failure) => (
+                                      <div
+                                        key={failure.key}
+                                        className="rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2"
+                                      >
+                                        <div className="text-sm font-medium">{failure.label}</div>
+                                        <div className="text-xs text-muted-foreground">
+                                          {failure.message}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </CardContent>
+                          ) : null}
+                        </Card>
+                      )}
+                      <DndContext
+                        sensors={dndSensors}
+                        collisionDetection={(args) => {
+                          const dragType = args.active.data.current?.dragType;
 
-                              <div className="flex flex-col gap-2">
-                                <Label htmlFor="draft-description">Description</Label>
-                                <Textarea
-                                  id="draft-description"
-                                  rows={8}
-                                  value={editState.description}
-                                  onChange={(e) =>
-                                    updateEditState((prev) => ({
-                                      ...prev,
-                                      description: e.target.value,
-                                    }))
-                                  }
-                                  placeholder="Describe the product"
-                                />
-                              </div>
+                          if (dragType === "image_item") {
+                            const imageContainers = args.droppableContainers.filter(
+                              (container) =>
+                                container.data.current?.dropType === "image_container"
+                            );
+                            const byPointer = pointerWithin({
+                              ...args,
+                              droppableContainers: imageContainers,
+                            });
+                            if (byPointer.length) return byPointer;
+                            return closestCenter({
+                              ...args,
+                              droppableContainers: imageContainers,
+                            });
+                          }
 
-                              <div className="flex flex-col gap-3">
-                                <div className="flex items-center justify-between gap-2">
-                                  <Label>Variations</Label>
-                                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                    {editState.variations.length ? (
-                                      <span>{editState.variations.length} item(s)</span>
-                                    ) : (
-                                      <span>No variations</span>
-                                    )}
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() =>
-                                        updateEditState((prev) => addVariation(prev))
+                          if (dragType === "variation_row") {
+                            const sortableContainers = args.droppableContainers.filter(
+                              (container) =>
+                                container.data.current?.dropType !== "image_container"
+                            );
+                            return closestCenter({
+                              ...args,
+                              droppableContainers: sortableContainers,
+                            });
+                          }
+
+                          return closestCenter(args);
+                        }}
+                        onDragStart={onDragStart}
+                        onDragCancel={onDragCancel}
+                        onDragEnd={onDragEnd}
+                      >
+                        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                          <Card>
+                            <CardHeader>
+                              <CardTitle className="text-base">Editable Draft</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <div className="flex flex-col gap-4">
+                                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                  <div className="flex flex-col gap-2">
+                                    <Label htmlFor="draft-title">Title</Label>
+                                    <Input
+                                      id="draft-title"
+                                      value={editState.title}
+                                      onChange={(e) =>
+                                        updateEditState((prev) => ({
+                                          ...prev,
+                                          title: e.target.value,
+                                        }))
+                                      }
+                                      placeholder="Enter product title"
+                                    />
+                                  </div>
+
+                                  <div className="flex flex-col gap-2">
+                                    <Label htmlFor="draft-currency">Currency</Label>
+                                    <Select
+                                      value={editState.currency || undefined}
+                                      onValueChange={(value) =>
+                                        updateEditState((prev) => ({
+                                          ...prev,
+                                          currency: value,
+                                        }))
                                       }
                                     >
-                                      Add variation
-                                    </Button>
+                                      <SelectTrigger id="draft-currency">
+                                        <SelectValue placeholder="Select currency" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {CURRENCY_OPTIONS.map((option) => (
+                                          <SelectItem key={option} value={option}>
+                                            {option}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
                                   </div>
                                 </div>
 
-                                {editState.variations.length === 0 ? (
-                                  <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-                                    No variations. This product will be created without variants.
+                                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                                  <div className="flex flex-col gap-2">
+                                    <Label htmlFor="draft-price">Price</Label>
+                                    <Input
+                                      id="draft-price"
+                                      type="number"
+                                      step="0.01"
+                                      inputMode="decimal"
+                                      value={editState.price}
+                                      onChange={(e) =>
+                                        updateEditState((prev) => ({
+                                          ...prev,
+                                          price: e.target.value,
+                                        }))
+                                      }
+                                      placeholder="0.00"
+                                    />
                                   </div>
-                                ) : (
-                                  <div className="flex flex-col gap-3">
-                                    <SortableContext
-                                      items={editState.variations.map((variation) => variation.id)}
-                                      strategy={verticalListSortingStrategy}
-                                    >
-                                      {editState.variations.map((variation) => {
-                                        const selectedVariationImage = getSelectedVariationImage(
-                                          variation,
-                                          selectedVariationImageIds[variation.id]
-                                        );
+
+                                  <div className="flex flex-col gap-2">
+                                    <Label htmlFor="draft-tax-rate">Tax Rate (0~1)</Label>
+                                    <Input
+                                      id="draft-tax-rate"
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      max="1"
+                                      inputMode="decimal"
+                                      value={editState.taxRate}
+                                      onChange={(e) =>
+                                        updateEditState((prev) => ({
+                                          ...prev,
+                                          taxRate: e.target.value,
+                                        }))
+                                      }
+                                      placeholder="0"
+                                    />
+                                  </div>
+
+                                  <div className="flex flex-col gap-2">
+                                    <Label htmlFor="draft-shipping-fee">Shipping Fee</Label>
+                                    <Input
+                                      id="draft-shipping-fee"
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      inputMode="decimal"
+                                      value={editState.shippingFee}
+                                      onChange={(e) =>
+                                        updateEditState((prev) => ({
+                                          ...prev,
+                                          shippingFee: e.target.value,
+                                        }))
+                                      }
+                                      placeholder="0"
+                                    />
+                                  </div>
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                  <Label htmlFor="draft-category-search">Category</Label>
+                                  <Input
+                                    id="draft-category-search"
+                                    value={categoryQuery}
+                                    onChange={(event) => setCategoryQuery(event.target.value)}
+                                    placeholder="Search categories (e.g. Mice)"
+                                    autoComplete="off"
+                                    className={cn(
+                                      isCategorySearching
+                                        ? "border-primary/60 ring-2 ring-primary/20"
+                                        : ""
+                                    )}
+                                  />
+                                  <div className="text-xs text-muted-foreground">
+                                    Search and select one category candidate. Saving stores
+                                    <code> category_ids</code> and <code> category_branch</code>.
+                                  </div>
+                                  {isCategorySearching ? (
+                                    <div className="flex items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-sm font-medium text-primary">
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                      <span>Searching categories...</span>
+                                    </div>
+                                  ) : null}
+                                  {categorySearchError ? (
+                                    <div className="text-xs text-destructive">
+                                      {categorySearchError}
+                                    </div>
+                                  ) : null}
+                                  {!isCategorySearching &&
+                                    !categorySearchError &&
+                                    categoryQueryTrimmed.length > 0 &&
+                                    categoryCandidates.length === 0 ? (
+                                    <div className="text-xs text-muted-foreground">
+                                      No categories found.
+                                    </div>
+                                  ) : null}
+                                  {!isCategorySearching && categoryCandidates.length > 0 ? (
+                                    <div className="max-h-64 overflow-auto rounded-md border">
+                                      {categoryCandidates.map((candidate) => {
+                                        const branchPath = candidate.branch
+                                          .map((node) => node.label.trim())
+                                          .filter((label) => label.length > 0)
+                                          .join(" > ");
+                                        const matchedPath = candidate.matched_path
+                                          .map((item) => item.trim())
+                                          .filter((item) => item.length > 0)
+                                          .join(" > ");
                                         return (
-                                          <SortableVariationRow key={variation.id} id={variation.id}>
-                                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
-                                            <div className="sm:col-span-7">
-                                              <DroppableImageContainer
-                                                containerId={toVariationContainerId(variation.id)}
-                                                isEnabled={activeDragType === "image_item"}
-                                                className="rounded-md p-1"
-                                              >
-                                                <div className="mb-2 flex items-center justify-between gap-2">
-                                                  <div className="text-xs text-muted-foreground">
-                                                    Click image to select, then use actions below
-                                                  </div>
-                                                  <div className="text-xs text-muted-foreground">
-                                                    {variation.images.length} image(s)
-                                                  </div>
-                                                </div>
-                                                <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-                                                  {variation.images.map((image) => (
-                                                    <DraggableImageCard
-                                                      key={image.id}
-                                                      containerId={toVariationContainerId(variation.id)}
-                                                      image={image}
-                                                      alt="Variation"
-                                                      imageClassName="h-32 w-full object-cover"
-                                                      badgeLabel={
-                                                        image.type === "existing" ? "URL" : "Uploaded"
-                                                      }
-                                                      resolutionText={
-                                                        imageResolutionById[image.id] ?? "—"
-                                                      }
-                                                      isSelected={selectedVariationImage?.id === image.id}
-                                                      isMain={isMainImageSelection(
-                                                        editState.mainImageSelection,
-                                                        toVariationContainerId(variation.id),
-                                                        image.id
-                                                      )}
-                                                      showInlineSetMain={false}
-                                                      showInlineRemove={false}
-                                                      onPreview={(nextImage) =>
-                                                        {
-                                                          setSelectedVariationImageIds((prev) => ({
-                                                            ...prev,
-                                                            [variation.id]: nextImage.id,
-                                                          }));
-                                                          openPreviewImage(
+                                          <button
+                                            key={`${candidate.leaf_id}-${candidate.leaf_name}`}
+                                            type="button"
+                                            className={cn(
+                                              "w-full border-b px-3 py-2 text-left text-sm last:border-b-0",
+                                              "hover:bg-muted/60"
+                                            )}
+                                            onClick={() => onSelectCategoryCandidate(candidate)}
+                                          >
+                                            <div className="font-medium">{candidate.leaf_label}</div>
+                                            <div className="text-xs text-muted-foreground">
+                                              {branchPath || "No branch path"}
+                                            </div>
+                                            {matchedPath.length ? (
+                                              <div className="text-[11px] text-muted-foreground/90">
+                                                Match: {matchedPath}
+                                              </div>
+                                            ) : null}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : null}
+
+                                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs">
+                                    {editState.categoryIds.length ? (
+                                      <div className="flex flex-col gap-2">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="font-medium">
+                                            {selectedCategoryPreview?.leafLabel ?? "Selected category"}
+                                          </div>
+                                          <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-7 px-2 text-xs"
+                                            onClick={onClearCategorySelection}
+                                          >
+                                            Clear
+                                          </Button>
+                                        </div>
+                                        {selectedCategoryPreview?.branchPath ? (
+                                          <div className="text-muted-foreground">
+                                            {selectedCategoryPreview.branchPath}
+                                          </div>
+                                        ) : null}
+                                        <div className="text-muted-foreground">
+                                          Category IDs: {editState.categoryIds.join(", ")}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="text-destructive">
+                                        No category selected. Category is required before publish.
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                  <Label htmlFor="draft-description">Description</Label>
+                                  <Textarea
+                                    id="draft-description"
+                                    rows={8}
+                                    value={editState.description}
+                                    onChange={(e) =>
+                                      updateEditState((prev) => ({
+                                        ...prev,
+                                        description: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="Describe the product"
+                                  />
+                                </div>
+
+                                <div className="flex flex-col gap-3">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Label>Variations</Label>
+                                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                      {editState.variations.length ? (
+                                        <span>{editState.variations.length} item(s)</span>
+                                      ) : (
+                                        <span>No variations</span>
+                                      )}
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={isBatchEditing}
+                                        onClick={() =>
+                                          updateEditState((prev) => addVariation(prev))
+                                        }
+                                      >
+                                        Add variation
+                                      </Button>
+                                    </div>
+                                  </div>
+
+                                  {editState.variations.length === 0 ? (
+                                    <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                                      No variations. This product will be created without variants.
+                                    </div>
+                                  ) : (
+                                    <div className="flex flex-col gap-3">
+                                      <SortableContext
+                                        items={editState.variations.map((variation) => variation.id)}
+                                        strategy={verticalListSortingStrategy}
+                                      >
+                                        {editState.variations.map((variation) => {
+                                          const selectedVariationImage = getSelectedVariationImage(
+                                            variation,
+                                            selectedVariationImageIds[variation.id]
+                                          );
+                                          return (
+                                            <SortableVariationRow
+                                              key={variation.id}
+                                              id={variation.id}
+                                              isDisabled={isBatchEditing}
+                                            >
+                                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
+                                                <div className="sm:col-span-7">
+                                                  <DroppableImageContainer
+                                                    containerId={toVariationContainerId(variation.id)}
+                                                    isEnabled={activeDragType === "image_item"}
+                                                    className="rounded-md p-1"
+                                                  >
+                                                    <div className="mb-2 flex items-center justify-between gap-2">
+                                                      <div className="text-xs text-muted-foreground">
+                                                        Click image to select, then use actions below
+                                                      </div>
+                                                      <div className="text-xs text-muted-foreground">
+                                                        {variation.images.length} image(s)
+                                                      </div>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                                                      {variation.images.map((image) => (
+                                                        <DraggableImageCard
+                                                          key={image.id}
+                                                          containerId={toVariationContainerId(variation.id)}
+                                                          image={image}
+                                                          alt="Variation"
+                                                          imageClassName="h-32 w-full object-cover"
+                                                          badgeLabel={
+                                                            image.type === "existing" ? "URL" : "Uploaded"
+                                                          }
+                                                          resolutionText={
+                                                            imageResolutionById[image.id] ?? "—"
+                                                          }
+                                                          isSelected={selectedVariationImage?.id === image.id}
+                                                          batchChecked={selectedImageKeys.has(
+                                                            createBatchSelectionKey(
+                                                              toVariationContainerId(variation.id),
+                                                              image.id
+                                                            )
+                                                          )}
+                                                          onBatchCheckedChange={(checked) =>
+                                                            setBatchImageSelected(
+                                                              toVariationContainerId(variation.id),
+                                                              image.id,
+                                                              checked
+                                                            )
+                                                          }
+                                                          batchSelectionDisabled={isBatchEditing}
+                                                          isMain={isMainImageSelection(
+                                                            editState.mainImageSelection,
                                                             toVariationContainerId(variation.id),
-                                                            nextImage,
-                                                            "Variation image",
-                                                            imageResolutionById[nextImage.id] ?? "—"
+                                                            image.id
+                                                          )}
+                                                          isEdited={lastBatchAppliedKeys.has(
+                                                            createBatchSelectionKey(
+                                                              toVariationContainerId(variation.id),
+                                                              image.id
+                                                            )
+                                                          )}
+                                                          onRevert={
+                                                            lastBatchAppliedKeys.has(
+                                                              createBatchSelectionKey(
+                                                                toVariationContainerId(variation.id),
+                                                                image.id
+                                                              )
+                                                            )
+                                                              ? () =>
+                                                                onRevertLastBatchImage(
+                                                                  createBatchSelectionKey(
+                                                                    toVariationContainerId(variation.id),
+                                                                    image.id
+                                                                  )
+                                                                )
+                                                              : undefined
+                                                          }
+                                                          showInlineSetMain={false}
+                                                          showInlineRemove={false}
+                                                          disableMutatingActions={isBatchEditing}
+                                                          externalProcessing={activeBatchKeys.has(
+                                                            createBatchSelectionKey(
+                                                              toVariationContainerId(variation.id),
+                                                              image.id
+                                                            )
+                                                          )}
+                                                          onPreview={(nextImage) => {
+                                                            setSelectedVariationImageIds((prev) => ({
+                                                              ...prev,
+                                                              [variation.id]: nextImage.id,
+                                                            }));
+                                                            openPreviewImage(
+                                                              toVariationContainerId(variation.id),
+                                                              nextImage,
+                                                              "Variation image",
+                                                              imageResolutionById[nextImage.id] ?? "—"
+                                                            );
+                                                          }
+                                                          }
+                                                          onAiEdit={onAiEditImage}
+                                                        />
+                                                      ))}
+                                                      <button
+                                                        type="button"
+                                                        className={cn(
+                                                          "flex h-32 flex-col items-center justify-center gap-1 rounded-lg border border-dashed text-[11px] text-muted-foreground transition-colors",
+                                                          "hover:border-primary hover:text-foreground"
+                                                        )}
+                                                        disabled={isBatchEditing}
+                                                        onClick={() => {
+                                                          const input = document.createElement("input");
+                                                          input.type = "file";
+                                                          input.accept = "image/*";
+                                                          input.multiple = true;
+                                                          input.onchange = (event) => {
+                                                            const files = Array.from(
+                                                              (event.target as HTMLInputElement).files ??
+                                                              []
+                                                            );
+                                                            if (files.length) {
+                                                              updateEditState((prev) =>
+                                                                addVariationImagesFromFile(
+                                                                  prev,
+                                                                  variation.id,
+                                                                  files
+                                                                )
+                                                              );
+                                                            }
+                                                          };
+                                                          input.click();
+                                                        }}
+                                                        onDragOver={(event) => {
+                                                          event.preventDefault();
+                                                        }}
+                                                        onDrop={(event) => {
+                                                          event.preventDefault();
+                                                          const files = Array.from(
+                                                            event.dataTransfer.files
                                                           );
-                                                        }
-                                                      }
-                                                      onAiEdit={onAiEditImage}
-                                                    />
-                                                  ))}
-                                                  <button
-                                                    type="button"
-                                                    className={cn(
-                                                      "flex h-32 flex-col items-center justify-center gap-1 rounded-lg border border-dashed text-[11px] text-muted-foreground transition-colors",
-                                                      "hover:border-primary hover:text-foreground"
-                                                    )}
-                                                    onClick={() => {
-                                                      const input = document.createElement("input");
-                                                      input.type = "file";
-                                                      input.accept = "image/*";
-                                                      input.multiple = true;
-                                                      input.onchange = (event) => {
-                                                        const files = Array.from(
-                                                          (event.target as HTMLInputElement).files ??
-                                                            []
-                                                        );
-                                                        if (files.length) {
                                                           updateEditState((prev) =>
                                                             addVariationImagesFromFile(
                                                               prev,
@@ -3184,387 +4143,400 @@ export function AiProductDraftShow() {
                                                               files
                                                             )
                                                           );
-                                                        }
-                                                      };
-                                                      input.click();
-                                                    }}
-                                                    onDragOver={(event) => {
-                                                      event.preventDefault();
-                                                    }}
-                                                    onDrop={(event) => {
-                                                      event.preventDefault();
-                                                      const files = Array.from(
-                                                        event.dataTransfer.files
-                                                      );
+                                                        }}
+                                                      >
+                                                        <ImagePlus className="h-4 w-4" />
+                                                        Add image(s)
+                                                      </button>
+                                                    </div>
+                                                  </DroppableImageContainer>
+                                                </div>
+
+                                                <div className="sm:col-span-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                                  <div className="flex flex-col gap-1 sm:col-span-2">
+                                                    <Label className="text-xs">Title</Label>
+                                                    <Input
+                                                      value={variation.title}
+                                                      placeholder="Variation title"
+                                                      onChange={(e) =>
+                                                        updateEditState((prev) =>
+                                                          updateVariationField(
+                                                            prev,
+                                                            variation.id,
+                                                            (item) => ({
+                                                              ...item,
+                                                              title: e.target.value,
+                                                            })
+                                                          )
+                                                        )
+                                                      }
+                                                    />
+                                                  </div>
+
+                                                  <div className="flex flex-col gap-1">
+                                                    <Label className="text-xs">Price</Label>
+                                                    <Input
+                                                      value={variation.price}
+                                                      type="text"
+                                                      inputMode="decimal"
+                                                      placeholder="Variation price"
+                                                      onChange={(e) =>
+                                                        updateEditState((prev) =>
+                                                          updateVariationField(
+                                                            prev,
+                                                            variation.id,
+                                                            (item) => ({
+                                                              ...item,
+                                                              price: e.target.value,
+                                                            })
+                                                          )
+                                                        )
+                                                      }
+                                                    />
+                                                  </div>
+
+                                                  <div className="flex flex-col gap-1">
+                                                    <Label className="text-xs">Position</Label>
+                                                    <Input
+                                                      value={variation.position}
+                                                      type="number"
+                                                      inputMode="numeric"
+                                                      readOnly
+                                                    />
+                                                    <div className="text-[10px] text-muted-foreground">
+                                                      Drag to reorder (0-based)
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                              </div>
+
+                                              <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-2 py-2">
+                                                <div className="text-xs text-muted-foreground">
+                                                  Selected:
+                                                  {" "}
+                                                  {selectedVariationImage
+                                                    ? selectedVariationImage.type === "existing"
+                                                      ? "URL image"
+                                                      : "Uploaded image"
+                                                    : "None"}
+                                                </div>
+                                                <Button
+                                                  type="button"
+                                                  variant="secondary"
+                                                  size="sm"
+                                                  disabled={
+                                                    isBatchEditing ||
+                                                    !selectedVariationImage ||
+                                                    isMainImageSelection(
+                                                      editState.mainImageSelection,
+                                                      toVariationContainerId(variation.id),
+                                                      selectedVariationImage.id
+                                                    )
+                                                  }
+                                                  onClick={() => {
+                                                    if (!selectedVariationImage) return;
+                                                    updateEditState((prev) => ({
+                                                      ...prev,
+                                                      mainImageSelection: {
+                                                        containerId: toVariationContainerId(variation.id),
+                                                        imageId: selectedVariationImage.id,
+                                                      },
+                                                    }));
+                                                  }}
+                                                >
+                                                  {selectedVariationImage &&
+                                                    isMainImageSelection(
+                                                      editState.mainImageSelection,
+                                                      toVariationContainerId(variation.id),
+                                                      selectedVariationImage.id
+                                                    )
+                                                    ? "Selected is main"
+                                                    : "Set selected as main"}
+                                                </Button>
+                                                <Button
+                                                  type="button"
+                                                  variant="outline"
+                                                  size="sm"
+                                                  disabled={isBatchEditing || !selectedVariationImage}
+                                                  onClick={() => {
+                                                    if (!selectedVariationImage) return;
+                                                    openPreviewImage(
+                                                      toVariationContainerId(variation.id),
+                                                      selectedVariationImage,
+                                                      "Variation image",
+                                                      imageResolutionById[selectedVariationImage.id] ??
+                                                      "—"
+                                                    );
+                                                  }}
+                                                >
+                                                  Preview selected
+                                                </Button>
+                                                <Button
+                                                  type="button"
+                                                  variant="destructive"
+                                                  size="sm"
+                                                  disabled={isBatchEditing || !selectedVariationImage}
+                                                  onClick={() => {
+                                                    if (!selectedVariationImage) return;
+                                                    updateEditState((prev) =>
+                                                      removeVariationImage(
+                                                        prev,
+                                                        variation.id,
+                                                        selectedVariationImage.id
+                                                      )
+                                                    );
+                                                  }}
+                                                >
+                                                  Remove selected
+                                                </Button>
+                                                {selectedVariationImage?.type === "existing" ? (
+                                                  <Input
+                                                    value={selectedVariationImage.url ?? ""}
+                                                    placeholder="Selected image URL"
+                                                    className="h-8 min-w-[16rem] flex-1"
+                                                    disabled={isBatchEditing}
+                                                    onChange={(e) =>
                                                       updateEditState((prev) =>
-                                                        addVariationImagesFromFile(
+                                                        updateVariationImageUrl(
                                                           prev,
                                                           variation.id,
-                                                          files
+                                                          selectedVariationImage.id,
+                                                          e.target.value
                                                         )
-                                                      );
-                                                    }}
-                                                  >
-                                                    <ImagePlus className="h-4 w-4" />
-                                                    Add image(s)
-                                                  </button>
-                                                </div>
-                                              </DroppableImageContainer>
-                                            </div>
+                                                      )
+                                                    }
+                                                  />
+                                                ) : null}
+                                              </div>
 
-                                            <div className="sm:col-span-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                                              <div className="flex flex-col gap-1 sm:col-span-2">
-                                                <Label className="text-xs">Title</Label>
+                                              <div className="flex flex-wrap items-center gap-2">
                                                 <Input
-                                                  value={variation.title}
-                                                  placeholder="Variation title"
+                                                  placeholder="Add image URL"
+                                                  value={variationImageUrlInputs[variation.id] ?? ""}
+                                                  disabled={isBatchEditing}
                                                   onChange={(e) =>
+                                                    setVariationImageUrlInputs((prev) => ({
+                                                      ...prev,
+                                                      [variation.id]: e.target.value,
+                                                    }))
+                                                  }
+                                                  className="h-8 max-w-sm"
+                                                />
+                                                <Button
+                                                  type="button"
+                                                  variant="outline"
+                                                  size="sm"
+                                                  className="whitespace-nowrap"
+                                                  disabled={isBatchEditing}
+                                                  onClick={() => {
+                                                    const nextUrl =
+                                                      variationImageUrlInputs[variation.id] ?? "";
+                                                    if (!nextUrl.trim().length) return;
                                                     updateEditState((prev) =>
-                                                      updateVariationField(
+                                                      addVariationImageFromUrl(
                                                         prev,
                                                         variation.id,
-                                                        (item) => ({
-                                                          ...item,
-                                                          title: e.target.value,
-                                                        })
+                                                        nextUrl
                                                       )
-                                                    )
-                                                  }
-                                                />
-                                              </div>
-
-                                              <div className="flex flex-col gap-1">
-                                                <Label className="text-xs">Price</Label>
-                                                <Input
-                                                  value={variation.price}
-                                                  type="text"
-                                                  inputMode="decimal"
-                                                  placeholder="Variation price"
-                                                  onChange={(e) =>
+                                                    );
+                                                    setVariationImageUrlInputs((prev) => ({
+                                                      ...prev,
+                                                      [variation.id]: "",
+                                                    }));
+                                                  }}
+                                                >
+                                                  Add URL
+                                                </Button>
+                                                <Button
+                                                  type="button"
+                                                  variant="destructive"
+                                                  size="sm"
+                                                  disabled={isBatchEditing}
+                                                  onClick={() =>
                                                     updateEditState((prev) =>
-                                                      updateVariationField(
-                                                        prev,
-                                                        variation.id,
-                                                        (item) => ({
-                                                          ...item,
-                                                          price: e.target.value,
-                                                        })
-                                                      )
+                                                      removeVariation(prev, variation)
                                                     )
                                                   }
-                                                />
+                                                >
+                                                  Remove variation
+                                                </Button>
                                               </div>
-
-                                              <div className="flex flex-col gap-1">
-                                                <Label className="text-xs">Position</Label>
-                                                <Input
-                                                  value={variation.position}
-                                                  type="number"
-                                                  inputMode="numeric"
-                                                  readOnly
-                                                />
-                                                <div className="text-[10px] text-muted-foreground">
-                                                  Drag to reorder (0-based)
-                                                </div>
-                                              </div>
-                                            </div>
-                                          </div>
-
-                                          <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-2 py-2">
-                                            <div className="text-xs text-muted-foreground">
-                                              Selected:
-                                              {" "}
-                                              {selectedVariationImage
-                                                ? selectedVariationImage.type === "existing"
-                                                  ? "URL image"
-                                                  : "Uploaded image"
-                                                : "None"}
-                                            </div>
-                                            <Button
-                                              type="button"
-                                              variant="secondary"
-                                              size="sm"
-                                              disabled={
-                                                !selectedVariationImage ||
-                                                isMainImageSelection(
-                                                  editState.mainImageSelection,
-                                                  toVariationContainerId(variation.id),
-                                                  selectedVariationImage.id
-                                                )
-                                              }
-                                              onClick={() => {
-                                                if (!selectedVariationImage) return;
-                                                updateEditState((prev) => ({
-                                                  ...prev,
-                                                  mainImageSelection: {
-                                                    containerId: toVariationContainerId(variation.id),
-                                                    imageId: selectedVariationImage.id,
-                                                  },
-                                                }));
-                                              }}
-                                            >
-                                              {selectedVariationImage &&
-                                              isMainImageSelection(
-                                                editState.mainImageSelection,
-                                                toVariationContainerId(variation.id),
-                                                selectedVariationImage.id
-                                              )
-                                                ? "Selected is main"
-                                                : "Set selected as main"}
-                                            </Button>
-                                            <Button
-                                              type="button"
-                                              variant="outline"
-                                              size="sm"
-                                              disabled={!selectedVariationImage}
-                                              onClick={() => {
-                                                if (!selectedVariationImage) return;
-                                                openPreviewImage(
-                                                  toVariationContainerId(variation.id),
-                                                  selectedVariationImage,
-                                                  "Variation image",
-                                                  imageResolutionById[selectedVariationImage.id] ??
-                                                    "—"
-                                                );
-                                              }}
-                                            >
-                                              Preview selected
-                                            </Button>
-                                            <Button
-                                              type="button"
-                                              variant="destructive"
-                                              size="sm"
-                                              disabled={!selectedVariationImage}
-                                              onClick={() => {
-                                                if (!selectedVariationImage) return;
-                                                updateEditState((prev) =>
-                                                  removeVariationImage(
-                                                    prev,
-                                                    variation.id,
-                                                    selectedVariationImage.id
-                                                  )
-                                                );
-                                              }}
-                                            >
-                                              Remove selected
-                                            </Button>
-                                            {selectedVariationImage?.type === "existing" ? (
-                                              <Input
-                                                value={selectedVariationImage.url ?? ""}
-                                                placeholder="Selected image URL"
-                                                className="h-8 min-w-[16rem] flex-1"
-                                                onChange={(e) =>
-                                                  updateEditState((prev) =>
-                                                    updateVariationImageUrl(
-                                                      prev,
-                                                      variation.id,
-                                                      selectedVariationImage.id,
-                                                      e.target.value
-                                                    )
-                                                  )
-                                                }
-                                              />
-                                            ) : null}
-                                          </div>
-
-                                          <div className="flex flex-wrap items-center gap-2">
-                                            <Input
-                                              placeholder="Add image URL"
-                                              value={variationImageUrlInputs[variation.id] ?? ""}
-                                              onChange={(e) =>
-                                                setVariationImageUrlInputs((prev) => ({
-                                                  ...prev,
-                                                  [variation.id]: e.target.value,
-                                                }))
-                                              }
-                                              className="h-8 max-w-sm"
-                                            />
-                                            <Button
-                                              type="button"
-                                              variant="outline"
-                                              size="sm"
-                                              className="whitespace-nowrap"
-                                              onClick={() => {
-                                                const nextUrl =
-                                                  variationImageUrlInputs[variation.id] ?? "";
-                                                if (!nextUrl.trim().length) return;
-                                                updateEditState((prev) =>
-                                                  addVariationImageFromUrl(
-                                                    prev,
-                                                    variation.id,
-                                                    nextUrl
-                                                  )
-                                                );
-                                                setVariationImageUrlInputs((prev) => ({
-                                                  ...prev,
-                                                  [variation.id]: "",
-                                                }));
-                                              }}
-                                            >
-                                              Add URL
-                                            </Button>
-                                            <Button
-                                              type="button"
-                                              variant="destructive"
-                                              size="sm"
-                                              onClick={() =>
-                                                updateEditState((prev) =>
-                                                  removeVariation(prev, variation)
-                                                )
-                                              }
-                                            >
-                                              Remove variation
-                                            </Button>
-                                          </div>
-                                        </SortableVariationRow>
-                                        );
-                                      })}
-                                    </SortableContext>
-                                  </div>
-                                )}
-                              </div>
-
-                            </div>
-                          </CardContent>
-                        </Card>
-
-                        <Card>
-                          <CardHeader className="gap-3">
-                            <CardTitle className="text-base">Images</CardTitle>
-                            <div className="grid gap-2 sm:max-w-md">
-                              <Label htmlFor="ai-image-model">AI Image Edit Model</Label>
-                              <Select
-                                value={aiImageModel}
-                                onValueChange={(value) => {
-                                  const isSupported = GEMINI_IMAGE_EDIT_MODELS.some(
-                                    (item) => item.value === value
-                                  );
-                                  if (!isSupported) return;
-                                  setAiImageModel(value as GeminiImageEditModel);
-                                }}
-                              >
-                                <SelectTrigger id="ai-image-model">
-                                  <SelectValue placeholder="Select model" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {GEMINI_IMAGE_EDIT_MODELS.map((item) => (
-                                    <SelectItem key={item.value} value={item.value}>
-                                      {item.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                              <p className="text-xs text-muted-foreground">
-                                用於「移除文字浮水印」、「替換成英文文案」與「去背」。
-                                {" "}
-                                2.5 Flash 通常較便宜，3.1 Flash 通常較穩定。
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                Current:
-                                {" "}
-                                {selectedAiImageModel.label}
-                                {" · "}
-                                {selectedAiImageModel.hint}
-                              </p>
-                            </div>
-                          </CardHeader>
-                          <CardContent className="flex flex-col gap-2">
-                            <DroppableImageContainer
-                              containerId="main"
-                              isEnabled={activeDragType === "image_item"}
-                              className="flex min-h-[28rem] flex-col gap-2 rounded-lg border border-dashed p-3 sm:min-h-[32rem]"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <Label>Images</Label>
-                                <div className="text-xs text-muted-foreground">
-                                  {editState.images.length} image(s)
-                                </div>
-                              </div>
-                              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                                {editState.images.map((image) => (
-                                  <DraggableImageCard
-                                    key={image.id}
-                                    containerId="main"
-                                    image={image}
-                                    alt="Draft"
-                                    imageClassName="h-32 w-full object-cover"
-                                    badgeLabel={image.type === "existing" ? "Original" : "New"}
-                                    resolutionText={imageResolutionById[image.id] ?? "—"}
-                                    isMain={isMainImageSelection(
-                                      editState.mainImageSelection,
-                                      "main",
-                                      image.id
-                                    )}
-                                    onRemove={() =>
-                                      updateEditState((prev) => removeImage(prev, image))
-                                    }
-                                    onSetMain={(nextImage) =>
-                                      updateEditState((prev) => ({
-                                        ...prev,
-                                        mainImageSelection: {
-                                          containerId: "main",
-                                          imageId: nextImage.id,
-                                        },
-                                      }))
-                                    }
-                                    onPreview={(nextImage) =>
-                                      openPreviewImage(
-                                        "main",
-                                        nextImage,
-                                        "Draft image",
-                                        imageResolutionById[nextImage.id] ?? "—"
-                                      )
-                                    }
-                                    onAiEdit={onAiEditImage}
-                                  />
-                                ))}
-                                <button
-                                  type="button"
-                                  className={cn(
-                                    "flex h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-xs text-muted-foreground transition-colors",
-                                    "hover:border-primary hover:text-foreground"
+                                            </SortableVariationRow>
+                                          );
+                                        })}
+                                      </SortableContext>
+                                    </div>
                                   )}
-                                  onClick={() => fileInputRef.current?.click()}
-                                  onDragOver={(event) => {
-                                    event.preventDefault();
-                                  }}
-                                  onDrop={(event) => {
-                                    event.preventDefault();
-                                    const files = Array.from(event.dataTransfer.files);
-                                    updateEditState((prev) => addImages(prev, files));
+                                </div>
+
+                              </div>
+                            </CardContent>
+                          </Card>
+
+                          <Card>
+                            <CardHeader className="gap-3">
+                              <CardTitle className="text-base">Images</CardTitle>
+                              <div className="grid gap-2 sm:max-w-md">
+                                <Label htmlFor="ai-image-model">AI Image Edit Model</Label>
+                                <Select
+                                  value={aiImageModel}
+                                  onValueChange={(value) => {
+                                    const isSupported = GEMINI_IMAGE_EDIT_MODELS.some(
+                                      (item) => item.value === value
+                                    );
+                                    if (!isSupported) return;
+                                    setAiImageModel(value as GeminiImageEditModel);
                                   }}
                                 >
-                                  <ImagePlus className="h-5 w-5" />
-                                  Drag & drop or click
-                                </button>
+                                  <SelectTrigger id="ai-image-model">
+                                    <SelectValue placeholder="Select model" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {GEMINI_IMAGE_EDIT_MODELS.map((item) => (
+                                      <SelectItem key={item.value} value={item.value}>
+                                        {item.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                <p className="text-xs text-muted-foreground">
+                                  用於「移除文字浮水印」、「替換成英文文案」與「去背」。
+                                  {" "}
+                                  2.5 Flash 通常較便宜，3.1 Flash 通常較穩定。
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  Current:
+                                  {" "}
+                                  {selectedAiImageModel.label}
+                                  {" · "}
+                                  {selectedAiImageModel.hint}
+                                </p>
                               </div>
-                              <div
-                                className={cn(
-                                  "flex min-h-24 items-center justify-center rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground",
-                                  activeDragType === "image_item"
-                                    ? "border-primary/50 bg-primary/5 text-foreground"
-                                    : "bg-muted/20"
-                                )}
+                            </CardHeader>
+                            <CardContent className="flex flex-col gap-2">
+                              <DroppableImageContainer
+                                containerId="main"
+                                isEnabled={activeDragType === "image_item"}
+                                className="flex min-h-[28rem] flex-col gap-2 rounded-lg border border-dashed p-3 sm:min-h-[32rem]"
                               >
-                                Drop variation images anywhere in this area
-                              </div>
-                            </DroppableImageContainer>
-                            <input
-                              ref={fileInputRef}
-                              type="file"
-                              accept="image/*"
-                              multiple
-                              className="hidden"
-                              onChange={(event) => {
-                                const files = Array.from(event.target.files ?? []);
-                                event.target.value = "";
-                                updateEditState((prev) => addImages(prev, files));
-                              }}
-                            />
-                          </CardContent>
-                        </Card>
-                      </div>
-                    </DndContext>
+                                <div className="flex items-center justify-between gap-2">
+                                  <Label>Images</Label>
+                                  <div className="text-xs text-muted-foreground">
+                                    {editState.images.length} image(s)
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                                  {editState.images.map((image) => (
+                                    <DraggableImageCard
+                                      key={image.id}
+                                      containerId="main"
+                                      image={image}
+                                      alt="Draft"
+                                      imageClassName="h-32 w-full object-cover"
+                                      badgeLabel={image.type === "existing" ? "Original" : "New"}
+                                      resolutionText={imageResolutionById[image.id] ?? "—"}
+                                      batchChecked={selectedImageKeys.has(
+                                        createBatchSelectionKey("main", image.id)
+                                      )}
+                                      onBatchCheckedChange={(checked) =>
+                                        setBatchImageSelected("main", image.id, checked)
+                                      }
+                                      batchSelectionDisabled={isBatchEditing}
+                                      isMain={isMainImageSelection(
+                                        editState.mainImageSelection,
+                                        "main",
+                                        image.id
+                                      )}
+                                      isEdited={lastBatchAppliedKeys.has(
+                                        createBatchSelectionKey("main", image.id)
+                                      )}
+                                      onRevert={
+                                        lastBatchAppliedKeys.has(
+                                          createBatchSelectionKey("main", image.id)
+                                        )
+                                          ? () =>
+                                            onRevertLastBatchImage(
+                                              createBatchSelectionKey("main", image.id)
+                                            )
+                                          : undefined
+                                      }
+                                      disableMutatingActions={isBatchEditing}
+                                      externalProcessing={activeBatchKeys.has(
+                                        createBatchSelectionKey("main", image.id)
+                                      )}
+                                      onRemove={() =>
+                                        updateEditState((prev) => removeImage(prev, image))
+                                      }
+                                      onSetMain={(nextImage) =>
+                                        updateEditState((prev) => ({
+                                          ...prev,
+                                          mainImageSelection: {
+                                            containerId: "main",
+                                            imageId: nextImage.id,
+                                          },
+                                        }))
+                                      }
+                                      onPreview={(nextImage) =>
+                                        openPreviewImage(
+                                          "main",
+                                          nextImage,
+                                          "Draft image",
+                                          imageResolutionById[nextImage.id] ?? "—"
+                                        )
+                                      }
+                                      onAiEdit={onAiEditImage}
+                                    />
+                                  ))}
+                                  <button
+                                    type="button"
+                                    className={cn(
+                                      "flex h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-xs text-muted-foreground transition-colors",
+                                      "hover:border-primary hover:text-foreground"
+                                    )}
+                                    disabled={isBatchEditing}
+                                    onClick={() => fileInputRef.current?.click()}
+                                    onDragOver={(event) => {
+                                      event.preventDefault();
+                                    }}
+                                    onDrop={(event) => {
+                                      event.preventDefault();
+                                      const files = Array.from(event.dataTransfer.files);
+                                      updateEditState((prev) => addImages(prev, files));
+                                    }}
+                                  >
+                                    <ImagePlus className="h-5 w-5" />
+                                    Drag & drop or click
+                                  </button>
+                                </div>
+                                <div
+                                  className={cn(
+                                    "flex min-h-24 items-center justify-center rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground",
+                                    activeDragType === "image_item"
+                                      ? "border-primary/50 bg-primary/5 text-foreground"
+                                      : "bg-muted/20"
+                                  )}
+                                >
+                                  Drop variation images anywhere in this area
+                                </div>
+                              </DroppableImageContainer>
+                              <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept="image/*"
+                                multiple
+                                className="hidden"
+                                disabled={isBatchEditing}
+                                onChange={(event) => {
+                                  const files = Array.from(event.target.files ?? []);
+                                  event.target.value = "";
+                                  updateEditState((prev) => addImages(prev, files));
+                                }}
+                              />
+                            </CardContent>
+                          </Card>
+                        </div>
+                      </DndContext>
+                    </>
                   ) : (
                     <div className="text-sm text-muted-foreground">
                       Draft payload is not available yet.
@@ -3752,6 +4724,65 @@ export function AiProductDraftShow() {
                               onClick={onAcceptAiEditPreview}
                             >
                               套用
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </DialogContent>
+                  </Dialog>
+
+                  <Dialog
+                    open={batchConfirmMode != null}
+                    onOpenChange={(nextOpen) => {
+                      if (!nextOpen) {
+                        setBatchConfirmMode(null);
+                      }
+                    }}
+                  >
+                    <DialogContent className="max-w-lg">
+                      <DialogTitle>
+                        Start batch AI edit
+                      </DialogTitle>
+                      {batchConfirmMode ? (
+                        <div className="space-y-4">
+                          <div className="space-y-2 text-sm">
+                            <div>
+                              <span className="font-medium">Mode:</span>
+                              {" "}
+                              {imageAiEditModeLabel(batchConfirmMode)}
+                            </div>
+                            <div>
+                              <span className="font-medium">Selected images:</span>
+                              {" "}
+                              {selectedBatchTargetCount}
+                            </div>
+                            <div>
+                              <span className="font-medium">Model:</span>
+                              {" "}
+                              {selectedAiImageModel.label}
+                            </div>
+                          </div>
+                          <Alert>
+                            <AlertTitle>Run in current tab</AlertTitle>
+                            <AlertDescription>
+                              This batch uses repeated direct requests and applies successful
+                              results into the draft immediately. Keep this tab open until the run
+                              finishes.
+                            </AlertDescription>
+                          </Alert>
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => setBatchConfirmMode(null)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={() => void onStartBatchEdit()}
+                            >
+                              Start batch edit
                             </Button>
                           </div>
                         </div>

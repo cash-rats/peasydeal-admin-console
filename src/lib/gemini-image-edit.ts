@@ -58,6 +58,8 @@ export const DEFAULT_GEMINI_IMAGE_EDIT_MODEL: GeminiImageEditModel =
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY?.trim();
 const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta";
+const IMAGE_FETCH_TIMEOUT_MS = 30_000;
+const GEMINI_REQUEST_TIMEOUT_MS = 120_000;
 
 type GeminiInlineData = {
   data?: string;
@@ -84,6 +86,21 @@ type GeminiApiResponse = {
 type AiEditImageOptions = {
   model?: GeminiImageEditModel;
 };
+
+function createTimeoutController(timeoutMs: number): {
+  controller: AbortController;
+  cleanup: () => void;
+} {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort(new Error(`Request timed out after ${timeoutMs}ms.`));
+  }, timeoutMs);
+
+  return {
+    controller,
+    cleanup: () => window.clearTimeout(timeoutId),
+  };
+}
 
 function isGeminiImageEditModel(value: string): value is GeminiImageEditModel {
   return GEMINI_IMAGE_EDIT_MODELS.some((item) => item.value === value);
@@ -171,13 +188,18 @@ export async function aiEditImage(
 
   // 1. Fetch the image and convert to base64
   let imgResponse: Response;
+  const imageTimeout = createTimeoutController(IMAGE_FETCH_TIMEOUT_MS);
   try {
-    imgResponse = await fetch(imageUrl);
+    imgResponse = await fetch(imageUrl, {
+      signal: imageTimeout.controller.signal,
+    });
   } catch (error) {
+    imageTimeout.cleanup();
     throw new Error(
       `Failed to fetch original image: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+  imageTimeout.cleanup();
 
   if (!imgResponse.ok) {
     throw new Error(`Failed to fetch original image: HTTP ${imgResponse.status}`);
@@ -192,12 +214,14 @@ export async function aiEditImage(
 
   // 2. Call Gemini API
   let response: Response;
+  const geminiTimeout = createTimeoutController(GEMINI_REQUEST_TIMEOUT_MS);
   try {
     response = await fetch(
       `${GEMINI_ENDPOINT}/models/${selectedModel}:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: geminiTimeout.controller.signal,
         body: JSON.stringify({
           contents: [
             {
@@ -214,10 +238,12 @@ export async function aiEditImage(
       }
     );
   } catch (error) {
+    geminiTimeout.cleanup();
     throw new Error(
       `Failed to call Gemini API: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+  geminiTimeout.cleanup();
 
   if (!response.ok) {
     throw new Error(await parseGeminiError(response));
