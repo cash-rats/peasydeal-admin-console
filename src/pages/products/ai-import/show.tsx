@@ -3707,7 +3707,7 @@ export function AiProductDraftShow() {
                       if (!open) closeAiEditPreview(true);
                     }}
                   >
-                    <DialogContent className="max-w-[min(96vw,1320px)]">
+                    <DialogContent className="max-h-[96vh] w-[min(98vw,1560px)] max-w-none overflow-y-auto">
                       <DialogTitle>
                         確認 AI 修圖：{aiEditPreview ? imageAiEditModeLabel(aiEditPreview.mode) : ""}
                       </DialogTitle>
@@ -3718,7 +3718,7 @@ export function AiProductDraftShow() {
                               <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
                                 原圖
                               </div>
-                              <div className="flex h-[min(68vh,720px)] items-center justify-center p-3">
+                              <div className="flex h-[min(42vh,360px)] items-center justify-center p-3 lg:h-[min(76vh,840px)]">
                                 <img
                                   src={aiEditPreview.originalUrl}
                                   alt="Original image"
@@ -3730,7 +3730,7 @@ export function AiProductDraftShow() {
                               <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
                                 處理後
                               </div>
-                              <div className="flex h-[min(68vh,720px)] items-center justify-center p-3">
+                              <div className="flex h-[min(42vh,360px)] items-center justify-center p-3 lg:h-[min(76vh,840px)]">
                                 <img
                                   src={aiEditPreview.processedPreviewUrl}
                                   alt="Processed image"
