@@ -7,15 +7,17 @@ function getErrorMessageFromPayload(payload: unknown): string | null {
   }
 
   const record = payload as Record<string, unknown>;
+  const code = typeof record.code === "string" && record.code.trim() ? record.code : null;
 
   if (typeof record.error === "string" && record.error.trim()) {
-    return record.error;
+    return code ? `${record.error} (${code})` : record.error;
   }
 
   if (typeof record.message === "string" && record.message.trim()) {
-    return record.message;
+    return code ? `${record.message} (${code})` : record.message;
   }
 
+  if (code) return code;
   return null;
 }
 
@@ -300,6 +302,51 @@ export async function updateProductDraft(
 
   if (!response.ok) {
     throw new Error(await parseApiErrorMessage(response, "Failed to update draft"));
+  }
+
+  return response.json();
+}
+
+export type UploadProductDraftImageRequest = {
+  file: File;
+  clientImageId?: string;
+  container?: "main" | "variation";
+  variationId?: string;
+};
+
+export type UploadProductDraftImageResponse = {
+  url: string;
+  content_type?: string;
+  size_bytes?: number;
+  client_image_id?: string;
+};
+
+export async function uploadProductDraftImage(
+  draftId: string,
+  payload: UploadProductDraftImageRequest
+): Promise<UploadProductDraftImageResponse> {
+  const formData = new FormData();
+  formData.set("file", payload.file);
+  if (payload.clientImageId?.trim()) {
+    formData.set("client_image_id", payload.clientImageId.trim());
+  }
+  if (payload.container) {
+    formData.set("container", payload.container);
+  }
+  if (payload.variationId?.trim()) {
+    formData.set("variation_id", payload.variationId.trim());
+  }
+
+  const response = await apiFetch(
+    withApiBaseUrl(`/v1/admin/product-drafts/${draftId}/images/upload`),
+    {
+      method: "POST",
+      body: formData,
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(await parseApiErrorMessage(response, "Failed to upload draft image"));
   }
 
   return response.json();

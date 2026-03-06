@@ -30,6 +30,7 @@ import {
   publishProductDraft,
   rejectProductDraft,
   searchCategoryTaxonomy,
+  uploadProductDraftImage,
   updateProductDraft,
   type CategoryTaxonomyCandidate,
   type ProductDraft,
@@ -1448,20 +1449,31 @@ function toNonNegativeNumberOrZero(value: string): number {
   return parsed < 0 ? 0 : parsed;
 }
 
-async function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") resolve(reader.result);
-      else reject(new Error("Failed to read image"));
-    };
-    reader.onerror = () => reject(new Error("Failed to read image"));
-    reader.readAsDataURL(file);
-  });
+type UploadedImageUrlMap = Map<string, string>;
+type UploadCandidate =
+  | { image: EditImageItem; container: "main"; variationId: null }
+  | { image: EditImageItem; container: "variation"; variationId: string };
+type LocalUploadCandidate =
+  | { image: EditImageItem & { file: File }; container: "main"; variationId: null }
+  | { image: EditImageItem & { file: File }; container: "variation"; variationId: string };
+
+function getUploadedImageUrl(uploadedImageUrls: UploadedImageUrlMap, image: EditImageItem): string | null {
+  const uploadedUrl = uploadedImageUrls.get(image.id);
+  if (typeof uploadedUrl === "string" && uploadedUrl.trim().length > 0) {
+    return uploadedUrl.trim();
+  }
+
+  if (image.type === "existing" && typeof image.url === "string") {
+    const trimmed = image.url.trim();
+    return trimmed.length ? trimmed : null;
+  }
+
+  return null;
 }
 
 async function toPayload(
   state: EditState,
+  uploadedImageUrls: UploadedImageUrlMap,
   status?: ProductDraftStatus | null,
   url?: string | null
 ): Promise<ProductDraftPayload> {
@@ -1475,14 +1487,7 @@ async function toPayload(
 
   const mainImageEntries = await Promise.all(
     normalizedState.images.map(async (image) => {
-      if (image.type === "existing" && typeof image.url === "string") {
-        const trimmed = image.url.trim();
-        return { id: image.id, url: trimmed.length ? trimmed : null };
-      }
-      if (isUploadedImageType(image) && image.file) {
-        return { id: image.id, url: await fileToDataUrl(image.file) };
-      }
-      return { id: image.id, url: null };
+      return { id: image.id, url: getUploadedImageUrl(uploadedImageUrls, image) };
     })
   );
   const images = mainImageEntries
@@ -1493,14 +1498,7 @@ async function toPayload(
     normalizedState.variations.map(async (variation) => {
       const imageEntries = await Promise.all(
         variation.images.map(async (image) => {
-          if (image.type === "existing" && typeof image.url === "string") {
-            const trimmed = image.url.trim();
-            return { id: image.id, url: trimmed.length ? trimmed : null };
-          }
-          if (isUploadedImageType(image) && image.file) {
-            return { id: image.id, url: await fileToDataUrl(image.file) };
-          }
-          return { id: image.id, url: null };
+          return { id: image.id, url: getUploadedImageUrl(uploadedImageUrls, image) };
         })
       );
 
@@ -1602,6 +1600,76 @@ async function toPayload(
     status: status ?? null,
     url: normalizedUrl,
   };
+}
+
+async function uploadLocalDraftImages(
+  draftId: string,
+  state: EditState,
+  uploadedUrlCache: Map<string, string>
+): Promise<UploadedImageUrlMap> {
+  const uploadedImageUrls: UploadedImageUrlMap = new Map();
+
+  const uploadCandidates: UploadCandidate[] = [
+    ...state.images.map((image) => ({
+      image,
+      container: "main" as const,
+      variationId: null,
+    })),
+    ...state.variations.flatMap((variation) =>
+      variation.images.map((image) => ({
+        image,
+        container: "variation" as const,
+        variationId: variation.id,
+      }))
+    ),
+  ];
+
+  const pendingUploads = uploadCandidates.filter(
+    (item): item is LocalUploadCandidate =>
+      isUploadedImageType(item.image) && item.image.file instanceof File
+  );
+
+  if (!pendingUploads.length) {
+    return uploadedImageUrls;
+  }
+
+  const nextUploads: LocalUploadCandidate[] = [];
+  pendingUploads.forEach((item) => {
+    const cacheKey = fileSignature(item.image.file);
+    const cachedUrl = uploadedUrlCache.get(cacheKey)?.trim();
+    if (cachedUrl) {
+      uploadedImageUrls.set(item.image.id, cachedUrl);
+      return;
+    }
+    nextUploads.push(item);
+  });
+
+  if (!nextUploads.length) {
+    return uploadedImageUrls;
+  }
+
+  const uploadResults = await Promise.all(
+    nextUploads.map(async ({ image, container, variationId }) => {
+      const response = await uploadProductDraftImage(draftId, {
+        file: image.file,
+        clientImageId: image.id,
+        container,
+        variationId: variationId ?? undefined,
+      });
+      const uploadedUrl = response.url?.trim();
+      if (!uploadedUrl) {
+        throw new Error("Draft image upload did not return a valid URL.");
+      }
+      return { imageId: image.id, cacheKey: fileSignature(image.file), url: uploadedUrl };
+    })
+  );
+
+  uploadResults.forEach(({ imageId, cacheKey, url }) => {
+    uploadedUrlCache.set(cacheKey, url);
+    uploadedImageUrls.set(imageId, url);
+  });
+
+  return uploadedImageUrls;
 }
 
 function toFiniteNumber(value: unknown): number | null {
@@ -1906,6 +1974,7 @@ export function AiProductDraftShow() {
   const editStateRef = React.useRef<EditState | null>(null);
   const aiEditPreviewRef = React.useRef<AiEditPreviewState | null>(null);
   const imageResolutionCacheRef = React.useRef<Map<string, string>>(new Map());
+  const uploadedDraftImageUrlCacheRef = React.useRef<Map<string, string>>(new Map());
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const draftPayload = React.useMemo(() => draft?.draft ?? null, [draft]);
@@ -2113,6 +2182,7 @@ export function AiProductDraftShow() {
       setVariationImageUrlInputs({});
       setSelectedVariationImageIds({});
       editSnapshotRef.current = null;
+      uploadedDraftImageUrlCacheRef.current = new Map();
       return;
     }
 
@@ -2132,6 +2202,7 @@ export function AiProductDraftShow() {
     setSelectedCategoryPreview(null);
     setVariationImageUrlInputs({});
     setSelectedVariationImageIds({});
+    uploadedDraftImageUrlCacheRef.current = new Map();
   }, [closeAiEditPreview, draftPayload]);
 
   React.useEffect(() => {
@@ -2233,7 +2304,17 @@ export function AiProductDraftShow() {
     }
     setIsPublishing(true);
     try {
-      const finalPayload = await toPayload(editState, "READY_FOR_REVIEW", draft?.draft?.url);
+      const uploadedImageUrls = await uploadLocalDraftImages(
+        draftId,
+        editState,
+        uploadedDraftImageUrlCacheRef.current
+      );
+      const finalPayload = await toPayload(
+        editState,
+        uploadedImageUrls,
+        "READY_FOR_REVIEW",
+        draft?.draft?.url
+      );
       const publishPayload = {
         ...finalPayload,
         draft_id: draftId,
@@ -2287,9 +2368,15 @@ export function AiProductDraftShow() {
 
     setIsSaving(true);
     try {
-      const payload = await toPayload(editState, draft?.status ?? null);
+      const uploadedImageUrls = await uploadLocalDraftImages(
+        draftId,
+        editState,
+        uploadedDraftImageUrlCacheRef.current
+      );
+      const payload = await toPayload(editState, uploadedImageUrls, draft?.status ?? null);
       const updated = await updateProductDraft(draftId, payload);
       editSnapshotRef.current = toEditSnapshot(updated.draft ?? payload);
+      uploadedDraftImageUrlCacheRef.current = new Map();
       setEditState((prev) => {
         revokeNewImagePreviews(prev);
         return createEditState(editSnapshotRef.current as EditSnapshot);
