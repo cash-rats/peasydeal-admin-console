@@ -157,6 +157,13 @@ type AiEditPreviewState = {
   processedPreviewUrl: string;
   processedFile: File;
 };
+type PreviewImageState = {
+  containerId: ImageContainerId;
+  imageId: string;
+  src: string;
+  resolution: string;
+  label: string;
+};
 
 function imageAiEditModeLabel(mode: ImageAiEditMode): string {
   switch (mode) {
@@ -903,6 +910,22 @@ function isImageInContainer(
   const variation = state.variations.find((item) => item.id === variationId);
   if (!variation) return false;
   return variation.images.some((image) => image.id === imageId);
+}
+
+function findImageInContainer(
+  state: Pick<EditState, "images" | "variations">,
+  containerId: ImageContainerId,
+  imageId: string
+): EditImageItem | null {
+  if (containerId === "main") {
+    return state.images.find((image) => image.id === imageId) ?? null;
+  }
+
+  const variationId = getVariationId(containerId);
+  if (!variationId) return null;
+  const variation = state.variations.find((item) => item.id === variationId);
+  if (!variation) return null;
+  return variation.images.find((image) => image.id === imageId) ?? null;
 }
 
 function normalizeMainImageSelection(state: EditState): EditState {
@@ -1970,11 +1993,7 @@ export function AiProductDraftShow() {
   const [imageResolutionById, setImageResolutionById] = React.useState<
     Record<string, string>
   >({});
-  const [previewImage, setPreviewImage] = React.useState<{
-    src: string;
-    resolution: string;
-    label: string;
-  } | null>(null);
+  const [previewImage, setPreviewImage] = React.useState<PreviewImageState | null>(null);
   const [aiEditPreview, setAiEditPreview] = React.useState<AiEditPreviewState | null>(null);
   const [aiImageModel, setAiImageModel] = React.useState<GeminiImageEditModel>(
     DEFAULT_GEMINI_IMAGE_EDIT_MODEL
@@ -2110,6 +2129,24 @@ export function AiProductDraftShow() {
       return null;
     });
   }, []);
+
+  const openPreviewImage = React.useCallback(
+    (
+      containerId: ImageContainerId,
+      image: EditImageItem,
+      label: string,
+      resolution: string
+    ) => {
+      setPreviewImage({
+        containerId,
+        imageId: image.id,
+        src: image.previewUrl,
+        resolution,
+        label,
+      });
+    },
+    []
+  );
 
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -2557,6 +2594,19 @@ export function AiProductDraftShow() {
       description: "Image replaced in draft.",
     });
   }, [closeAiEditPreview, open, updateEditState]);
+
+  const currentPreviewImage =
+    previewImage && editState
+      ? findImageInContainer(editState, previewImage.containerId, previewImage.imageId)
+      : null;
+  const previewImageIsMain =
+    previewImage && editState
+      ? isMainImageSelection(
+          editState.mainImageSelection,
+          previewImage.containerId,
+          previewImage.imageId
+        )
+      : false;
 
   if (!draftId) {
     return (
@@ -3099,12 +3149,12 @@ export function AiProductDraftShow() {
                                                             ...prev,
                                                             [variation.id]: nextImage.id,
                                                           }));
-                                                          setPreviewImage({
-                                                            src: nextImage.previewUrl,
-                                                            resolution:
-                                                              imageResolutionById[nextImage.id] ?? "—",
-                                                            label: "Variation image",
-                                                          });
+                                                          openPreviewImage(
+                                                            toVariationContainerId(variation.id),
+                                                            nextImage,
+                                                            "Variation image",
+                                                            imageResolutionById[nextImage.id] ?? "—"
+                                                          );
                                                         }
                                                       }
                                                       onAiEdit={onAiEditImage}
@@ -3269,13 +3319,13 @@ export function AiProductDraftShow() {
                                               disabled={!selectedVariationImage}
                                               onClick={() => {
                                                 if (!selectedVariationImage) return;
-                                                setPreviewImage({
-                                                  src: selectedVariationImage.previewUrl,
-                                                  resolution:
-                                                    imageResolutionById[selectedVariationImage.id] ??
-                                                    "—",
-                                                  label: "Variation image",
-                                                });
+                                                openPreviewImage(
+                                                  toVariationContainerId(variation.id),
+                                                  selectedVariationImage,
+                                                  "Variation image",
+                                                  imageResolutionById[selectedVariationImage.id] ??
+                                                    "—"
+                                                );
                                               }}
                                             >
                                               Preview selected
@@ -3458,11 +3508,12 @@ export function AiProductDraftShow() {
                                       }))
                                     }
                                     onPreview={(nextImage) =>
-                                      setPreviewImage({
-                                        src: nextImage.previewUrl,
-                                        resolution: imageResolutionById[nextImage.id] ?? "—",
-                                        label: "Draft image",
-                                      })
+                                      openPreviewImage(
+                                        "main",
+                                        nextImage,
+                                        "Draft image",
+                                        imageResolutionById[nextImage.id] ?? "—"
+                                      )
                                     }
                                     onAiEdit={onAiEditImage}
                                   />
@@ -3535,6 +3586,108 @@ export function AiProductDraftShow() {
                           <div className="flex items-center justify-between border-b border-white/20 px-4 py-2 text-xs text-white/80">
                             <span>{previewImage.label}</span>
                             <span>{previewImage.resolution}</span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => void downloadImage(previewImage.src)}
+                            >
+                              <Download className="mr-2 h-4 w-4" />
+                              下載
+                            </Button>
+                            {currentPreviewImage ? (
+                              <>
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => {
+                                    setPreviewImage(null);
+                                    void onAiEditImage(
+                                      previewImage.containerId,
+                                      currentPreviewImage,
+                                      "remove_text_overlay"
+                                    );
+                                  }}
+                                >
+                                  移除文字浮水印
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => {
+                                    setPreviewImage(null);
+                                    void onAiEditImage(
+                                      previewImage.containerId,
+                                      currentPreviewImage,
+                                      "replace_text_overlay_with_english"
+                                    );
+                                  }}
+                                >
+                                  替換成英文文案
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => {
+                                    setPreviewImage(null);
+                                    void onAiEditImage(
+                                      previewImage.containerId,
+                                      currentPreviewImage,
+                                      "remove_background"
+                                    );
+                                  }}
+                                >
+                                  去背
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  size="sm"
+                                  disabled={previewImageIsMain}
+                                  onClick={() => {
+                                    updateEditState((prev) => ({
+                                      ...prev,
+                                      mainImageSelection: {
+                                        containerId: previewImage.containerId,
+                                        imageId: currentPreviewImage.id,
+                                      },
+                                    }));
+                                  }}
+                                >
+                                  {previewImageIsMain ? "目前是主圖" : "設為主圖"}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="destructive"
+                                  size="sm"
+                                  onClick={() => {
+                                    setPreviewImage(null);
+                                    if (previewImage.containerId === "main") {
+                                      updateEditState((prev) =>
+                                        removeImage(prev, currentPreviewImage)
+                                      );
+                                      return;
+                                    }
+                                    const variationId = getVariationId(previewImage.containerId);
+                                    if (!variationId) return;
+                                    updateEditState((prev) =>
+                                      removeVariationImage(
+                                        prev,
+                                        variationId,
+                                        currentPreviewImage.id
+                                      )
+                                    );
+                                  }}
+                                >
+                                  移除
+                                </Button>
+                              </>
+                            ) : null}
                           </div>
                           <div className="flex h-[min(82vh,920px)] items-center justify-center p-3">
                             <img
