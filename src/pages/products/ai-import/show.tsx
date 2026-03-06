@@ -43,7 +43,7 @@ import {
   GEMINI_IMAGE_EDIT_MODELS,
   type GeminiImageEditModel,
   PROMPT_REMOVE_BACKGROUND,
-  PROMPT_REMOVE_CHINESE_TEXT,
+  PROMPT_REMOVE_TEXT_OVERLAY,
 } from "@/lib/gemini-image-edit";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -143,7 +143,7 @@ type MainImageSelection = {
   imageId: string;
 } | null;
 type DragKind = "variation_row" | "image_item" | null;
-type ImageAiEditMode = "remove_chinese_text" | "remove_background";
+type ImageAiEditMode = "remove_text_overlay" | "remove_background";
 type AiEditPreviewState = {
   containerId: ImageContainerId;
   imageId: string;
@@ -154,7 +154,7 @@ type AiEditPreviewState = {
 };
 
 function imageAiEditModeLabel(mode: ImageAiEditMode): string {
-  return mode === "remove_chinese_text" ? "Remove Chinese Text" : "Remove Background";
+  return mode === "remove_text_overlay" ? "Remove Text Overlay" : "Remove Background";
 }
 
 type EditState = EditSnapshot & {
@@ -1379,9 +1379,9 @@ function DraggableImageCard({
           <>
             <ContextMenuItem
               disabled={isInteractionDisabled}
-              onClick={() => void handleAiEdit("remove_chinese_text")}
+              onClick={() => void handleAiEdit("remove_text_overlay")}
             >
-              ✨ Remove Chinese Text
+              ✨ Remove Text Overlay
             </ContextMenuItem>
             <ContextMenuItem
               disabled={isInteractionDisabled}
@@ -2367,7 +2367,7 @@ export function AiProductDraftShow() {
   const onAiEditImage = React.useCallback(
     async (containerId: ImageContainerId, image: EditImageItem, mode: ImageAiEditMode) => {
       const prompt =
-        mode === "remove_chinese_text" ? PROMPT_REMOVE_CHINESE_TEXT : PROMPT_REMOVE_BACKGROUND;
+        mode === "remove_text_overlay" ? PROMPT_REMOVE_TEXT_OVERLAY : PROMPT_REMOVE_BACKGROUND;
       const actionLabel = imageAiEditModeLabel(mode);
 
       try {
@@ -3295,7 +3295,7 @@ export function AiProductDraftShow() {
                                 </SelectContent>
                               </Select>
                               <p className="text-xs text-muted-foreground">
-                                Used for “Remove Chinese Text” and “Remove Background”.
+                                Used for “Remove Text Overlay” and “Remove Background”.
                                 {" "}
                                 2.5 Flash is usually cheaper; 3.1 Flash is usually more stable.
                               </p>

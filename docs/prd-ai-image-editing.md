@@ -4,7 +4,7 @@
 
 ## Objective
 
-Enable operators to **remove Chinese text overlays** and **remove backgrounds** from product images directly within the admin console's draft review page, using the **Gemini API**.
+Enable operators to **remove added text overlays** and **remove backgrounds** from product images directly within the admin console's draft review page, using the **Gemini API**.
 
 ## Background & Context
 
@@ -12,14 +12,14 @@ Enable operators to **remove Chinese text overlays** and **remove backgrounds** 
 
 PeasyDeal crawls product listings from Taobao/Shopee and creates product drafts for the UK market. Crawled images often contain:
 
-- **Chinese promotional text overlays** (e.g., 特价, 包邮, store names)
+- **Promotional text overlays and badges** (for example Chinese, English, mixed-language labels, store names, callouts)
 - **Cluttered backgrounds** that don't meet UK market presentation standards
 
 Currently, operators must manually download images, edit them externally, and re-upload — a slow, error-prone process.
 
 ### What we want
 
-A **one-click** solution in the admin console: right-click an image → "Remove Chinese Text" → get a cleaned image → confirm or discard.
+A **one-click** solution in the admin console: right-click an image → "Remove Text Overlay" → get a cleaned image → confirm or discard.
 
 ---
 
@@ -45,7 +45,7 @@ A **one-click** solution in the admin console: right-click an image → "Remove 
 │   Admin Console (React SPA on Vercel)   │
 │                                         │
 │   Right-click image →                   │
-│   • Remove Chinese Text                 │
+│   • Remove Text Overlay                 │
 │   • Remove Background                   │
 │                                         │
 │   Browser fetch() ──────────────────────┼───> Gemini API
@@ -72,11 +72,15 @@ Vercel: only serves static HTML/JS/CSS (zero compute cost)
 
 These prompts have been tested and produce good results:
 
-### Remove Chinese Text
+### Remove Text Overlay
 ```
-Remove all Chinese text, Chinese characters (中文), and promotional text overlays
-from this product image. Keep the product itself completely intact.
-Reconstruct the background behind the removed text naturally so it blends seamlessly.
+Remove all added text overlays, promotional labels, badges, callouts, and graphic annotations
+from this product image, regardless of language or character set.
+This includes mixed-language overlays such as Chinese plus English letters, numbers, symbols,
+or any other non-product text added on top of the image.
+Keep the product itself completely intact. Do not remove text that is physically part of the
+product, packaging, or printed artwork captured in the original scene.
+Reconstruct the background behind the removed overlays naturally so it blends seamlessly.
 Do not add any new text or elements.
 ```
 
@@ -110,7 +114,7 @@ The `DraggableImageCard` component (in `show.tsx`) already has a right-click con
 
 ### What needs to be added
 
-- ⬜ **"Remove Chinese Text"** context menu item → calls Gemini API → shows before/after → replaces image
+- ⬜ **"Remove Text Overlay"** context menu item → calls Gemini API → shows before/after → replaces image
 - ⬜ **"Remove Background"** context menu item → same flow
 - ⬜ **`aiEditImage()` utility function** → fetches image, calls Gemini REST API, returns processed Blob
 - ⬜ **Before/After preview dialog** in frontend
@@ -209,7 +213,7 @@ Operator right-clicks image
         │
         ▼
 Context menu:
-  ✨ Remove Chinese Text
+  ✨ Remove Text Overlay
   🪄 Remove Background
   ─────────────────
   📥 Download
@@ -218,7 +222,7 @@ Context menu:
   ─────────────────
   🗑 Remove
         │
-Clicks "Remove Chinese Text"
+Clicks "Remove Text Overlay"
         │
         ▼
 Image card shows loading spinner overlay
@@ -241,7 +245,7 @@ Before/After preview dialog opens
 ### Phase 1 — MVP
 - Add `VITE_GEMINI_API_KEY` env var
 - Create `aiEditImage()` utility function in frontend
-- Add "Remove Chinese Text" and "Remove Background" to existing context menu
+- Add "Remove Text Overlay" and "Remove Background" to existing context menu
 - Loading spinner overlay on image card during processing
 - Before/after preview dialog
 - Accept → replace image in `editState` (as uploaded file type)
@@ -271,7 +275,7 @@ Before/After preview dialog opens
 2. Read `show.tsx` — focus on `DraggableImageCard` (~line 1107) and its `ContextMenu` (~line 1257)
 3. Create a new file `src/lib/gemini-image-edit.ts` with the `aiEditImage()` function (see TypeScript reference above)
 4. Add `VITE_GEMINI_API_KEY` to `.env.local`
-5. Add "Remove Chinese Text" and "Remove Background" items to the existing `ContextMenuContent` in `DraggableImageCard`
+5. Add "Remove Text Overlay" and "Remove Background" items to the existing `ContextMenuContent` in `DraggableImageCard`
 6. Add a loading overlay state to `DraggableImageCard`
 7. Create a Before/After dialog (reference the existing preview `Dialog` at ~line 3076)
 8. On "Accept": convert the processed Blob into an `EditImageItem` with `type: "uploaded"` and replace the original in `editState`
@@ -291,11 +295,11 @@ Before/After preview dialog opens
 - [x] Create `src/lib/gemini-image-edit.ts`
   - [x] `blobToBase64()` helper
   - [x] `aiEditImage(imageUrl, prompt)` → returns `Blob`
-  - [x] Export prompt constants (`PROMPT_REMOVE_CHINESE_TEXT`, `PROMPT_REMOVE_BACKGROUND`)
+  - [x] Export prompt constants (`PROMPT_REMOVE_TEXT_OVERLAY`, `PROMPT_REMOVE_BACKGROUND`)
   - [x] Error handling (API errors, network failures, no image in response)
 
 ### 2. Context Menu — New Items
-- [x] Add "✨ Remove Chinese Text" item to `DraggableImageCard` context menu
+- [x] Add "✨ Remove Text Overlay" item to `DraggableImageCard` context menu
 - [x] Add "🪄 Remove Background" item to `DraggableImageCard` context menu
 - [x] Wire up click handlers to call `aiEditImage()`
 
@@ -311,7 +315,7 @@ Before/After preview dialog opens
 - [x] "Cancel" button → discard processed image
 
 ### 5. Integration & Testing
-- [ ] End-to-end test: right-click → Remove Chinese Text → preview → accept
+- [ ] End-to-end test: right-click → Remove Text Overlay → preview → accept
 - [ ] End-to-end test: right-click → Remove Background → preview → accept
 - [ ] Verify replaced image persists in draft edit state
 - [ ] Error state testing (invalid API key, network error)

@@ -1,7 +1,11 @@
-export const PROMPT_REMOVE_CHINESE_TEXT = `
-Remove all Chinese text, Chinese characters (中文), and promotional text overlays
-from this product image. Keep the product itself completely intact.
-Reconstruct the background behind the removed text naturally so it blends seamlessly.
+export const PROMPT_REMOVE_TEXT_OVERLAY = `
+Remove all added text overlays, promotional labels, badges, callouts, and graphic annotations
+from this product image, regardless of language or character set.
+This includes mixed-language overlays such as Chinese plus English letters, numbers, symbols,
+or any other non-product text added on top of the image.
+Keep the product itself completely intact. Do not remove text that is physically part of the
+product, packaging, or printed artwork captured in the original scene.
+Reconstruct the background behind the removed overlays naturally so it blends seamlessly.
 Do not add any new text or elements.
 `.trim();
 
