@@ -44,6 +44,7 @@ import {
   GEMINI_IMAGE_EDIT_MODELS,
   type GeminiImageEditModel,
   PROMPT_REMOVE_BACKGROUND,
+  PROMPT_REPLACE_TEXT_OVERLAY_WITH_ENGLISH,
   PROMPT_REMOVE_TEXT_OVERLAY,
 } from "@/lib/gemini-image-edit";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -144,7 +145,10 @@ type MainImageSelection = {
   imageId: string;
 } | null;
 type DragKind = "variation_row" | "image_item" | null;
-type ImageAiEditMode = "remove_text_overlay" | "remove_background";
+type ImageAiEditMode =
+  | "remove_text_overlay"
+  | "replace_text_overlay_with_english"
+  | "remove_background";
 type AiEditPreviewState = {
   containerId: ImageContainerId;
   imageId: string;
@@ -155,7 +159,16 @@ type AiEditPreviewState = {
 };
 
 function imageAiEditModeLabel(mode: ImageAiEditMode): string {
-  return mode === "remove_text_overlay" ? "Remove Text Overlay" : "Remove Background";
+  switch (mode) {
+    case "remove_text_overlay":
+      return "移除文字浮水印";
+    case "replace_text_overlay_with_english":
+      return "替換成英文文案";
+    case "remove_background":
+      return "去背";
+    default:
+      return "AI 修圖";
+  }
 }
 
 type EditState = EditSnapshot & {
@@ -1382,13 +1395,19 @@ function DraggableImageCard({
               disabled={isInteractionDisabled}
               onClick={() => void handleAiEdit("remove_text_overlay")}
             >
-              ✨ Remove Text Overlay
+              ✨ 移除文字浮水印
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={isInteractionDisabled}
+              onClick={() => void handleAiEdit("replace_text_overlay_with_english")}
+            >
+              📝 替換成英文文案
             </ContextMenuItem>
             <ContextMenuItem
               disabled={isInteractionDisabled}
               onClick={() => void handleAiEdit("remove_background")}
             >
-              🪄 Remove Background
+              🪄 去背
             </ContextMenuItem>
             <ContextMenuSeparator />
           </>
@@ -2454,7 +2473,11 @@ export function AiProductDraftShow() {
   const onAiEditImage = React.useCallback(
     async (containerId: ImageContainerId, image: EditImageItem, mode: ImageAiEditMode) => {
       const prompt =
-        mode === "remove_text_overlay" ? PROMPT_REMOVE_TEXT_OVERLAY : PROMPT_REMOVE_BACKGROUND;
+        mode === "remove_text_overlay"
+          ? PROMPT_REMOVE_TEXT_OVERLAY
+          : mode === "replace_text_overlay_with_english"
+            ? PROMPT_REPLACE_TEXT_OVERLAY_WITH_ENGLISH
+            : PROMPT_REMOVE_BACKGROUND;
       const actionLabel = imageAiEditModeLabel(mode);
 
       try {
@@ -3382,9 +3405,9 @@ export function AiProductDraftShow() {
                                 </SelectContent>
                               </Select>
                               <p className="text-xs text-muted-foreground">
-                                Used for “Remove Text Overlay” and “Remove Background”.
+                                用於「移除文字浮水印」、「替換成英文文案」與「去背」。
                                 {" "}
-                                2.5 Flash is usually cheaper; 3.1 Flash is usually more stable.
+                                2.5 Flash 通常較便宜，3.1 Flash 通常較穩定。
                               </p>
                               <p className="text-xs text-muted-foreground">
                                 Current:
@@ -3533,14 +3556,14 @@ export function AiProductDraftShow() {
                   >
                     <DialogContent className="max-w-[min(96vw,1320px)]">
                       <DialogTitle>
-                        Review AI Edit: {aiEditPreview ? imageAiEditModeLabel(aiEditPreview.mode) : ""}
+                        確認 AI 修圖：{aiEditPreview ? imageAiEditModeLabel(aiEditPreview.mode) : ""}
                       </DialogTitle>
                       {aiEditPreview ? (
                         <div className="space-y-4">
                           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                             <div className="overflow-hidden rounded-md border bg-muted/20">
                               <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
-                                Original
+                                原圖
                               </div>
                               <div className="flex h-[min(68vh,720px)] items-center justify-center p-3">
                                 <img
@@ -3552,7 +3575,7 @@ export function AiProductDraftShow() {
                             </div>
                             <div className="overflow-hidden rounded-md border bg-muted/20">
                               <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
-                                Processed
+                                處理後
                               </div>
                               <div className="flex h-[min(68vh,720px)] items-center justify-center p-3">
                                 <img
@@ -3569,13 +3592,13 @@ export function AiProductDraftShow() {
                               variant="outline"
                               onClick={() => closeAiEditPreview(true)}
                             >
-                              Cancel
+                              取消
                             </Button>
                             <Button
                               type="button"
                               onClick={onAcceptAiEditPreview}
                             >
-                              Accept
+                              套用
                             </Button>
                           </div>
                         </div>

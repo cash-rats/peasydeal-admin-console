@@ -15,6 +15,23 @@ with a clean pure white (#FFFFFF) background. Maintain the original
 product size and proportions.
 `.trim();
 
+export const PROMPT_REPLACE_TEXT_OVERLAY_WITH_ENGLISH = `
+Identify every added promotional text overlay, badge, label, callout, and annotation in this image.
+
+For each added overlay:
+1. Remove the original non-English or mixed-language text completely.
+2. Replace it with natural, short, fluent English text.
+3. Keep the replacement in approximately the same location and with similar visual prominence.
+
+Important rules:
+- Do not leave any original overlay text visible.
+- Do not simply erase the overlays; replace them with English.
+- Do not change the product, hand, photo, printed card, packaging, or background scene.
+- Do not modify text that is physically part of the product or printed materials in the photographed scene.
+- The final image should contain only English promotional overlay text, not Chinese or mixed-language overlay text.
+- Keep the rewritten overlays clean, readable, and commercially natural.
+`.trim();
+
 export type GeminiImageEditModel =
   | "gemini-3.1-flash-image-preview"
   | "gemini-2.5-flash-image";
