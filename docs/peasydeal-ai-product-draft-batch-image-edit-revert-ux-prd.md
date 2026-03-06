@@ -1,0 +1,236 @@
+# AI Product Draft — Batch Image Edit Per-Image Revert UX PRD
+
+## 1) Summary
+Improve the current direct-request batch image editing flow so operators can keep good results and revert bad ones **per image**, without using the global draft reset.
+
+This PRD is intended to follow the current implementation in:
+- [`src/pages/products/ai-import/show.tsx`](/Users/huangchihan/develop/bbj/peasydeal/peasydeal-admin-console/src/pages/products/ai-import/show.tsx)
+
+## 2) Problem
+Current batch edit behavior auto-applies successful results directly into local draft state.
+
+This creates a UX problem:
+- operator batch edits 3 images
+- 2 results are good
+- 1 result is bad
+- current `Reset` action resets the whole draft editor state
+
+This is too destructive for the operator workflow because one bad result should not force them to discard all good results from the same batch.
+
+## 3) Goal
+Allow operators to:
+1. identify which images were changed by the latest batch edit
+2. revert only specific bad results
+3. optionally revert all images from the latest batch run
+4. keep good results without losing them through a global reset
+
+## 4) Non-goals
+This phase does not include:
+1. full version history across many batch runs
+2. unlimited undo stack
+3. reverting edits from arbitrary historical sessions
+4. backend persistence for batch revert history
+5. a separate batch review route or gallery
+
+## 5) UX Principle
+The operator should be able to answer this question immediately:
+
+`Which images were changed by the last batch run, and how do I undo only the bad ones?`
+
+The UI should make that answer obvious without requiring the operator to use the global `Reset`.
+
+## 6) Recommended UX
+
+### 6.1 Rename global reset
+Change the existing `Reset` button label to something explicit such as:
+- `Reset all draft changes`
+- or `重設整份草稿`
+
+Reason:
+- make it clear this is not “undo last batch”
+- reduce accidental loss of valid edits
+
+### 6.2 Track last batch-applied images
+After a batch run completes successfully or partially successfully:
+- each successfully replaced image should be marked as belonging to the latest batch session
+
+### 6.3 Show image-level affordance on changed tiles
+For images changed by the latest batch run, show clear UI on the image card:
+- `Edited` badge
+- `Revert` button
+
+Optional later enhancement:
+- `Before / After` preview action
+
+### 6.4 Add summary actions in batch panel
+After batch completion, the `Batch AI Edit` panel should provide:
+- `Revert all from last batch`
+- existing summary counts
+
+This gives operators both:
+- per-image rollback
+- one-click rollback for the whole last batch
+
+### 6.5 Keep successful images applied by default
+Do not change the core direct-request flow.
+
+The current model remains:
+- successful results are applied immediately
+- operator inspects results in place
+- operator reverts only the bad ones
+
+## 7) User Stories
+1. As an operator, I can tell which images were changed by the latest batch run.
+2. As an operator, I can revert one bad image without affecting the other successful images.
+3. As an operator, I can revert the whole last batch if the run was poor overall.
+4. As an operator, I can still use the existing save/publish flow after keeping only the good results.
+
+## 8) Functional Requirements
+
+### FR-1: Preserve per-image original value for latest batch
+When a batch edit successfully replaces an image, frontend must retain enough data to restore the previous image state for that image.
+
+### FR-2: Per-image revert
+For every image changed by the latest batch run, operator can click `Revert` to restore that image only.
+
+### FR-3: Revert all from latest batch
+Operator can revert all successfully changed images from the latest batch run in one action.
+
+### FR-4: Reset remains global
+The existing reset action still resets the entire draft editor to the snapshot baseline.
+
+### FR-5: Revert works before save/publish
+Per-image revert applies to local draft edit state before save/publish.
+
+## 9) Recommended Data Model
+
+Add a frontend-only structure to track the latest batch session.
+
+Example shape:
+
+```ts
+type LastBatchAppliedItem = {
+  key: string; // `${containerId}::${imageId}`
+  containerId: ImageContainerId;
+  imageId: string;
+  label: string;
+  previousImage: EditImageItem;
+};
+
+type LastBatchSession = {
+  mode: ImageAiEditMode;
+  appliedKeys: string[];
+  appliedItems: LastBatchAppliedItem[];
+};
+```
+
+Notes:
+- `previousImage` should be captured before replacement
+- this should only track the latest batch run, not historical runs
+- replacing an image again in a new batch should overwrite last-batch tracking
+
+## 10) Technical Design
+
+### 10.1 Capture previous image before replacement
+When batch processing succeeds for a target image:
+1. resolve the current image from live state
+2. clone enough image metadata to restore it later
+3. store that in `lastBatchSession`
+4. then replace with processed image
+
+### 10.2 Add helper to restore one image
+Recommended utility:
+
+```ts
+function replaceImageWithExistingState(
+  state: EditState,
+  containerId: ImageContainerId,
+  imageId: string,
+  image: EditImageItem
+): EditState
+```
+
+This should:
+- replace only the matching image
+- revoke object URLs only when appropriate
+- preserve other images and draft state
+
+### 10.3 Add helper to revert one image from batch session
+Recommended page-level callback:
+
+```ts
+function revertLastBatchImage(key: BatchSelectionKey): void
+```
+
+Behavior:
+- find stored previous image
+- restore it into `editState`
+- remove that item from `lastBatchSession`
+
+### 10.4 Add helper to revert all images from latest batch
+Recommended page-level callback:
+
+```ts
+function revertAllFromLastBatch(): void
+```
+
+Behavior:
+- restore all stored previous images
+- clear `lastBatchSession`
+
+## 11) UX Placement
+
+### 11.1 In image card
+For any image that belongs to the latest batch-applied set:
+- show a visible badge such as `Edited`
+- show a compact `Revert` action
+
+Recommended placement:
+- badge near existing image metadata
+- revert action near other image actions, but not hidden behind right-click only
+
+### 11.2 In batch summary panel
+When a batch run completes and there are successful edits:
+- show `Revert all from last batch`
+- optionally show `N images changed`
+
+## 12) Edge Cases
+1. Operator batch edits an image, then moves it between containers.
+   - keying by `containerId + imageId` may no longer resolve cleanly
+   - implementation should clarify whether revert support is only guaranteed before moving images
+2. Operator batch edits, then removes a changed image.
+   - revert should ignore missing image safely
+3. Operator batch edits, then runs another batch.
+   - latest batch tracking should be replaced, not merged indefinitely
+4. Operator saves after partial revert.
+   - resulting saved payload should reflect the mixed keep/revert state
+
+## 13) Acceptance Criteria
+1. After a batch run, changed images are visually distinguishable from unchanged images.
+2. Operator can revert one changed image without affecting others.
+3. Operator can revert all images changed by the latest batch run.
+4. Global draft reset remains available and clearly labeled as a full reset.
+5. Saving after partial revert preserves only the images the operator kept.
+
+## 14) Implementation Plan
+
+### Phase 1
+1. Rename global reset button to clarify full-draft scope
+2. Add latest-batch tracking state
+3. Capture previous image data before batch replacement
+4. Add per-image revert action
+5. Add `Revert all from last batch` in batch panel
+
+### Phase 2
+1. Add optional before/after preview for batch-edited tiles
+2. Add richer “changed by latest batch” filtering or highlighting
+
+## 15) Recommendation
+Implement this as the next step after the current direct-request batch MVP.
+
+It solves the most important operator trust issue without forcing the product into a heavier review workflow.
+
+This gives a strong middle ground:
+- keep the simple direct-request batch architecture
+- avoid destructive global reset behavior
+- let operators keep the 2 good images and discard the 1 bad image
