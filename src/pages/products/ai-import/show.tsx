@@ -2324,6 +2324,8 @@ export function AiProductDraftShow() {
     if (!draftId) return;
     if (!draft) return;
     if (isTerminalStatus(draft.status)) return;
+    // Keep local review edits stable; avoid polling that can overwrite local batch results.
+    if (draft.status === "READY_FOR_REVIEW") return;
     if (isBatchEditing) return;
 
     const timer = window.setInterval(() => {
@@ -2562,7 +2564,7 @@ export function AiProductDraftShow() {
     setBatchEditState(null);
     clearLastBatchSession();
     uploadedDraftImageUrlCacheRef.current = new Map();
-  }, [clearLastBatchSession, closeAiEditPreview, draftPayload, isBatchEditing]);
+  }, [clearLastBatchSession, closeAiEditPreview, draftPayload]);
 
   React.useEffect(() => {
     editStateRef.current = editState;
