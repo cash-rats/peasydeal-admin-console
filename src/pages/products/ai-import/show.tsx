@@ -202,6 +202,14 @@ type LastBatchSession = {
   appliedItems: LastBatchAppliedItem[];
 };
 
+function createLastBatchSession(mode: ImageAiEditMode): LastBatchSession {
+  return {
+    mode,
+    appliedKeys: [],
+    appliedItems: [],
+  };
+}
+
 function imageAiEditModeLabel(mode: ImageAiEditMode): string {
   switch (mode) {
     case "remove_text_overlay":
@@ -2385,16 +2393,18 @@ export function AiProductDraftShow() {
     []
   );
 
-  const clearLastBatchSession = React.useCallback(() => {
+  const resetLastBatchSession = React.useCallback((nextMode?: ImageAiEditMode) => {
     const currentSession = lastBatchSessionRef.current;
     if (currentSession) {
       currentSession.appliedItems.forEach((item) => {
         revokeLocalImagePreview(item.previousImage);
       });
     }
-    lastBatchSessionRef.current = null;
-    setLastBatchSession(null);
+    const nextSession = nextMode ? createLastBatchSession(nextMode) : null;
+    lastBatchSessionRef.current = nextSession;
+    setLastBatchSession(nextSession);
   }, []);
+  const clearLastBatchSession = resetLastBatchSession;
 
   const removeLastBatchAppliedItem = React.useCallback((key: BatchSelectionKey) => {
     setLastBatchSession((prev) => {
@@ -2537,7 +2547,7 @@ export function AiProductDraftShow() {
       setSelectedImageKeys(new Set<BatchSelectionKey>());
       setBatchConfirmMode(null);
       setBatchEditState(null);
-      clearLastBatchSession();
+      resetLastBatchSession();
       editSnapshotRef.current = null;
       uploadedDraftImageUrlCacheRef.current = new Map();
       return;
@@ -2562,9 +2572,9 @@ export function AiProductDraftShow() {
     setSelectedImageKeys(new Set<BatchSelectionKey>());
     setBatchConfirmMode(null);
     setBatchEditState(null);
-    clearLastBatchSession();
+    resetLastBatchSession();
     uploadedDraftImageUrlCacheRef.current = new Map();
-  }, [clearLastBatchSession, closeAiEditPreview, draftPayload]);
+  }, [closeAiEditPreview, draftPayload, resetLastBatchSession]);
 
   React.useEffect(() => {
     editStateRef.current = editState;
@@ -2686,14 +2696,14 @@ export function AiProductDraftShow() {
 
   React.useEffect(() => {
     return () => {
-      clearLastBatchSession();
+      resetLastBatchSession();
       revokeNewImagePreviews(editStateRef.current);
       revokeNewVariationPreviews(editStateRef.current);
       if (aiEditPreviewRef.current) {
         URL.revokeObjectURL(aiEditPreviewRef.current.processedPreviewUrl);
       }
     };
-  }, [clearLastBatchSession]);
+  }, [resetLastBatchSession]);
 
   const hasCategoryIds = (editState?.categoryIds.length ?? 0) > 0;
   const publishBlockedByCategory = !hasCategoryIds;
@@ -2795,7 +2805,7 @@ export function AiProductDraftShow() {
         revokeNewImagePreviews(prev);
         return createEditState(editSnapshotRef.current as EditSnapshot);
       });
-      clearLastBatchSession();
+      resetLastBatchSession();
       open?.({ type: "success", message: "Draft updated" });
       await refresh();
     } catch (e) {
@@ -2938,7 +2948,7 @@ export function AiProductDraftShow() {
     setBatchConfirmMode(null);
     setPreviewImage(null);
     closeAiEditPreview(true);
-    clearLastBatchSession();
+    resetLastBatchSession(mode);
     setBatchEditState({
       mode,
       total: targets.length,
@@ -3016,36 +3026,19 @@ export function AiProductDraftShow() {
           return;
         }
 
-        updateEditState((prev) => {
-          console.log("[batch-edit] replacing image", {
-            containerId: target.containerId,
-            imageId: target.imageId,
-            newPreviewUrl: previewUrl,
-            mainImageIds: prev.images.map((i) => i.id),
-            variationImageIds: prev.variations.map((v) => ({
-              variationId: v.id,
-              imageIds: v.images.map((i) => i.id),
-            })),
-          });
-          const result = replaceImageWithUploaded(
+        updateEditState((prev) =>
+          replaceImageWithUploaded(
             prev,
             target.containerId,
             target.imageId,
             file,
             previewUrl,
             { revokeReplacedPreview: false }
-          );
-          if (result === prev) {
-            console.error(
-              "[batch-edit] ⚠️ replaceImageWithUploaded returned UNCHANGED state — image not found!",
-              { containerId: target.containerId, imageId: target.imageId }
-            );
-          } else {
-            console.log("[batch-edit] ✅ image replaced successfully");
-          }
-          return result;
-        });
+          )
+        );
         setLastBatchSession((prev) => {
+          const baseSession =
+            prev && prev.mode === mode ? prev : createLastBatchSession(mode);
           const nextItem: LastBatchAppliedItem = {
             key: target.key,
             containerId: target.containerId,
@@ -3055,11 +3048,11 @@ export function AiProductDraftShow() {
             appliedPreviewUrl: previewUrl,
           };
           const nextItems = [
-            ...(prev?.appliedItems ?? []).filter((item) => item.key !== target.key),
+            ...baseSession.appliedItems.filter((item) => item.key !== target.key),
             nextItem,
           ];
           return {
-            mode,
+            mode: baseSession.mode,
             appliedItems: nextItems,
             appliedKeys: nextItems.map((item) => item.key),
           };
@@ -3178,10 +3171,10 @@ export function AiProductDraftShow() {
   }, [
     aiImageModel,
     batchConfirmMode,
-    clearLastBatchSession,
     closeAiEditPreview,
     isBatchEditing,
     open,
+    resetLastBatchSession,
     selectedBatchTargets,
     updateEditState,
   ]);
@@ -3461,13 +3454,13 @@ export function AiProductDraftShow() {
                               revokeNewVariationPreviews(prev);
                               return createEditState(editSnapshotRef.current as EditSnapshot);
                             });
-                            clearLastBatchSession();
+                            resetLastBatchSession();
                           }}
                           disabled={
                             !editState || !editState.isDirty || isDeleting || isBatchEditing
                           }
                         >
-                          重設整份草稿
+                          Reset all draft changes
                         </Button>
                         <Button
                           variant="secondary"

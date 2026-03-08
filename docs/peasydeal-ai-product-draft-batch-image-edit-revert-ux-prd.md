@@ -234,3 +234,50 @@ This gives a strong middle ground:
 - keep the simple direct-request batch architecture
 - avoid destructive global reset behavior
 - let operators keep the 2 good images and discard the 1 bad image
+
+## 16) Implementation Checklist
+
+### 16.1 Branch and scope
+- [x] Create feature branch: `codex/ai-batch-image-revert-ux`
+- [ ] Keep scope limited to latest batch only (no multi-run history, no undo stack)
+
+### 16.2 State model
+- [ ] Add `LastBatchSession` and `LastBatchAppliedItem` types in `show.tsx` (or a nearby types module)
+- [ ] Add `lastBatchSession` page state with empty initial value
+- [ ] Use a stable key format: `${containerId}::${imageId}`
+
+### 16.3 Batch apply flow changes
+- [ ] At batch run start, replace old `lastBatchSession` with a new run-scoped session
+- [ ] Before each successful replacement, capture the current image as `previousImage`
+- [ ] After replacement success, append item and key into `lastBatchSession`
+- [ ] Do not add failed targets into `lastBatchSession`
+
+### 16.4 Revert helpers
+- [ ] Implement `replaceImageWithExistingState(state, containerId, imageId, image)`
+- [ ] Implement `revertLastBatchImage(key)` and remove only that reverted item from session
+- [ ] Implement `revertAllFromLastBatch()` and clear session after restore
+- [ ] Ensure missing/moved/deleted image targets are ignored safely (no throw)
+
+### 16.5 UI changes
+- [ ] Rename global `Reset` to `Reset all draft changes` (or `重設整份草稿`)
+- [ ] Show `Edited` badge on images changed by the latest batch session
+- [ ] Add per-image `Revert` action on changed image cards
+- [ ] Add batch panel action: `Revert all from last batch`
+- [ ] Show summary count in batch panel (for example: `N images changed`)
+
+### 16.6 Interaction rules
+- [ ] Re-running batch should overwrite latest-batch tracking, not merge indefinitely
+- [ ] Per-image revert must not affect other successfully edited images
+- [ ] Revert-all should only affect images from the latest batch session
+- [ ] Global reset behavior remains full-draft reset
+
+### 16.7 Verification checklist
+- [ ] Partial-success run: edit 3 images, revert 1 bad, keep 2 good
+- [ ] Revert-all after partial-success run
+- [ ] Save after partial revert persists the mixed keep/revert result
+- [ ] Remove or move an edited image, then trigger revert (must degrade safely)
+- [ ] Run a second batch and confirm latest-session overwrite behavior
+
+### 16.8 Optional phase-2 follow-ups
+- [ ] Add `Before / After` preview for edited image cards
+- [ ] Add filtering/highlight mode for "changed by latest batch"
