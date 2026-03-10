@@ -10,6 +10,12 @@ function normalizeBaseUrl(input: string | undefined): string {
  * - "http://localhost:8080": requests become `http://localhost:8080/api/...`
  */
 export const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL);
+export const PUBLISH_API_BASE_URL_PRODUCTION = normalizeBaseUrl(
+  import.meta.env.VITE_PUBLISH_API_BASE_URL_PRODUCTION
+);
+export const PUBLISH_API_BASE_URL_STAGING = normalizeBaseUrl(
+  import.meta.env.VITE_PUBLISH_API_BASE_URL_STAGING
+);
 
 export function withApiBaseUrl(pathOrUrl: string): string {
   if (!API_BASE_URL) return pathOrUrl;
@@ -18,3 +24,29 @@ export function withApiBaseUrl(pathOrUrl: string): string {
   return `${API_BASE_URL}${pathOrUrl}`;
 }
 
+export function getPublishApiBaseUrl(target: "staging" | "production"): string {
+  const baseUrl =
+    target === "production"
+      ? PUBLISH_API_BASE_URL_PRODUCTION
+      : PUBLISH_API_BASE_URL_STAGING;
+
+  if (!baseUrl) {
+    const envVarName =
+      target === "production"
+        ? "VITE_PUBLISH_API_BASE_URL_PRODUCTION"
+        : "VITE_PUBLISH_API_BASE_URL_STAGING";
+    throw new Error(`Missing ${envVarName} environment variable.`);
+  }
+
+  return baseUrl;
+}
+
+export function withPublishApiBaseUrl(
+  pathOrUrl: string,
+  target: "staging" | "production"
+): string {
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  const baseUrl = getPublishApiBaseUrl(target);
+  if (!pathOrUrl.startsWith("/")) return `${baseUrl}/${pathOrUrl}`;
+  return `${baseUrl}${pathOrUrl}`;
+}

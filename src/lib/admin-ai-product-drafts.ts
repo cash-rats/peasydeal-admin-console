@@ -1,4 +1,4 @@
-import { withApiBaseUrl } from "@/lib/api-base-url";
+import { withApiBaseUrl, withPublishApiBaseUrl } from "@/lib/api-base-url";
 import { apiFetch } from "@/lib/api-client";
 
 function getErrorMessageFromPayload(payload: unknown): string | null {
@@ -528,14 +528,21 @@ export async function publishProductDraft(
   draftId: string,
   payload: PublishProductDraftRequest
 ): Promise<PublishProductDraftResponse> {
+  const publishUrl = withPublishApiBaseUrl(
+    `/v1/admin/product-drafts/${draftId}/publish?target=${encodeURIComponent(
+      payload.target
+    )}`,
+    payload.target
+  );
+  const { target, ...publishBody } = payload;
   const response = await apiFetch(
-    withApiBaseUrl(`/v1/admin/product-drafts/${draftId}/publish`),
+    publishUrl,
     {
       method: "POST",
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(publishBody),
     }
   );
 

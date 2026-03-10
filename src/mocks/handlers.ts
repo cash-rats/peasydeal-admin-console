@@ -5,7 +5,6 @@ import type {
   ProductDraftPayload,
   ProductDraftStatus,
   PublishState,
-  PublishTarget,
 } from "./types";
 
 type StoredDraft = ProductDraft;
@@ -305,22 +304,26 @@ export const handlers = [
       return HttpResponse.json({ message: "Not found" }, { status: 404 });
     }
 
+    const requestUrl = new URL(request.url);
+    const targetQuery = requestUrl.searchParams.get("target");
+    const target = targetQuery === "staging" || targetQuery === "production"
+      ? targetQuery
+      : null;
+
     const body = (await request.json().catch(() => null)) as
-      | ({ draft_id?: string; target?: PublishTarget } & ProductDraftPayload)
+      | ({ draft_id?: string } & ProductDraftPayload)
       | null;
     if (!body || body.draft_id !== draftId) {
       return HttpResponse.json({ message: "draft_id mismatch" }, { status: 400 });
     }
-    if (body.target !== "staging" && body.target !== "production") {
-      return HttpResponse.json({ message: "target is required" }, { status: 400 });
+    if (!target) {
+      return HttpResponse.json({ message: "target query is required" }, { status: 400 });
     }
 
     const finalPayload: ProductDraftPayload = { ...body };
     delete (finalPayload as { draft_id?: string }).draft_id;
-    delete (finalPayload as { target?: PublishTarget }).target;
     const visibility =
       typeof finalPayload.visibility === "boolean" ? finalPayload.visibility : true;
-    const target = body.target;
 
     const computed = computeStatus(stored);
     if (computed !== "READY_FOR_REVIEW") {
