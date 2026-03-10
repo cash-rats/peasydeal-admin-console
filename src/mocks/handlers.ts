@@ -1,6 +1,12 @@
 import { http, HttpResponse } from "msw";
 
-import type { ProductDraft, ProductDraftPayload, ProductDraftStatus } from "./types";
+import type {
+  ProductDraft,
+  ProductDraftPayload,
+  ProductDraftStatus,
+  PublishState,
+  PublishTarget,
+} from "./types";
 
 type StoredDraft = ProductDraft;
 
@@ -18,7 +24,8 @@ function newId(): string {
 }
 
 function computeStatus(draft: StoredDraft): ProductDraftStatus {
-  if (draft.status === "PUBLISHED" || draft.status === "FAILED") return draft.status;
+  if (draft.publish_state.production.status === "PUBLISHED") return "PUBLISHED";
+  if (draft.status === "FAILED") return draft.status;
   if (draft.status === "REJECTED") return draft.status;
 
   const elapsedMs = Date.now() - draft.created_at_ms;
@@ -32,6 +39,25 @@ function computeStatus(draft: StoredDraft): ProductDraftStatus {
   if (elapsedSeconds < 5) return "CRAWLING";
   if (elapsedSeconds < 8) return "DRAFTING";
   return "READY_FOR_REVIEW";
+}
+
+function createEmptyPublishState(): PublishState {
+  return {
+    status: "NOT_PUBLISHED",
+    product_id: null,
+    product_uuid: null,
+    published_at_ms: null,
+    error: null,
+  };
+}
+
+function syncProductionMirrorFields(draft: StoredDraft): StoredDraft {
+  const production = draft.publish_state.production;
+  return {
+    ...draft,
+    published_at_ms: production.published_at_ms,
+    published_product_id: production.product_id,
+  };
 }
 
 function isProductDraftStatusValue(value: string): value is ProductDraftStatus {
@@ -157,6 +183,10 @@ export const handlers = [
       updated_at_ms: created_at_ms,
       published_at_ms: null,
       published_product_id: null,
+      publish_state: {
+        staging: createEmptyPublishState(),
+        production: createEmptyPublishState(),
+      },
     };
 
     drafts.set(id, draft);
@@ -191,6 +221,7 @@ export const handlers = [
       nextDraft = ensurePayload(nextDraft);
     }
 
+    nextDraft = syncProductionMirrorFields(nextDraft);
     drafts.set(draftId, nextDraft);
     return HttpResponse.json(nextDraft);
   }),
@@ -258,6 +289,10 @@ export const handlers = [
         url: draft.draft?.url ?? null,
         thumbnail_url: resolveThumbnailUrl(draft),
         updated_at_ms: draft.updated_at_ms,
+        publish_state_summary: {
+          staging: { status: draft.publish_state.staging.status },
+          production: { status: draft.publish_state.production.status },
+        },
       })),
       next_cursor: nextCursor,
     });
@@ -271,16 +306,21 @@ export const handlers = [
     }
 
     const body = (await request.json().catch(() => null)) as
-      | ({ draft_id?: string } & ProductDraftPayload)
+      | ({ draft_id?: string; target?: PublishTarget } & ProductDraftPayload)
       | null;
     if (!body || body.draft_id !== draftId) {
       return HttpResponse.json({ message: "draft_id mismatch" }, { status: 400 });
     }
+    if (body.target !== "staging" && body.target !== "production") {
+      return HttpResponse.json({ message: "target is required" }, { status: 400 });
+    }
 
     const finalPayload: ProductDraftPayload = { ...body };
     delete (finalPayload as { draft_id?: string }).draft_id;
+    delete (finalPayload as { target?: PublishTarget }).target;
     const visibility =
       typeof finalPayload.visibility === "boolean" ? finalPayload.visibility : true;
+    const target = body.target;
 
     const computed = computeStatus(stored);
     if (computed !== "READY_FOR_REVIEW") {
@@ -290,29 +330,62 @@ export const handlers = [
       );
     }
 
+    const existingTargetState = stored.publish_state[target];
+    if (existingTargetState.status === "PUBLISHED") {
+      return HttpResponse.json({
+        ok: true,
+        draft_id: draftId,
+        target,
+        product_id: existingTargetState.product_id
+          ? Number(existingTargetState.product_id)
+          : nowMs(),
+        product_uuid: existingTargetState.product_uuid,
+        published_at_ms: existingTargetState.published_at_ms,
+        idempotent_reused: true,
+        publish_state: stored.publish_state,
+      });
+    }
+
     const published_at_ms = nowMs();
-    const published_product_id = newId();
+    const published_product_id = String(published_at_ms);
+    const published_product_uuid = newId();
     const ensured = ensurePayload(stored);
-    const next: StoredDraft = {
+    const nextTargetState: PublishState = {
+      status: "PUBLISHED",
+      product_id: published_product_id,
+      product_uuid: published_product_uuid,
+      published_at_ms,
+      error: null,
+    };
+    let next: StoredDraft = {
       ...ensured,
       draft: {
         ...ensured.draft,
         ...finalPayload,
         visibility: typeof finalPayload.visibility === "boolean" ? finalPayload.visibility : visibility,
       },
-      status: "PUBLISHED",
       updated_at_ms: published_at_ms,
-      published_at_ms,
-      published_product_id,
+      publish_state: {
+        ...ensured.publish_state,
+        [target]: nextTargetState,
+      },
     };
+    next = syncProductionMirrorFields({
+      ...next,
+      status: target === "production" ? "PUBLISHED" : "READY_FOR_REVIEW",
+    });
 
     drafts.set(draftId, next);
 
     return HttpResponse.json({
+      ok: true,
       draft_id: draftId,
-      status: "PUBLISHED",
-      product_id: published_product_id,
-      visibility,
+      target,
+      product_id: Number(published_product_id),
+      product_uuid: published_product_uuid,
+      published_at_ms,
+      idempotent_reused: false,
+      publish_state: next.publish_state,
     });
   }),
 
@@ -340,10 +413,17 @@ export const handlers = [
 
   http.delete("*/v1/admin/product-drafts/:draftId", ({ params }) => {
     const draftId = String((params as Record<string, string>).draftId);
-    const existed = drafts.delete(draftId);
-    if (!existed) {
+    const stored = drafts.get(draftId);
+    if (!stored) {
       return HttpResponse.json({ message: "Not found" }, { status: 404 });
     }
+    if (stored.publish_state.production.status === "PUBLISHED") {
+      return HttpResponse.json(
+        { message: "cannot delete a published draft" },
+        { status: 409 }
+      );
+    }
+    drafts.delete(draftId);
     return new HttpResponse(null, { status: 204 });
   }),
 
@@ -362,14 +442,29 @@ export const handlers = [
       return HttpResponse.json({ message: "Invalid payload" }, { status: 400 });
     }
 
-    const next: StoredDraft = {
+    const readOnlyField = Object.keys(updates).find(
+      (key) =>
+        key === "publish_state" ||
+        key === "published_at_ms" ||
+        key === "published_product_id" ||
+        key.startsWith("staging_") ||
+        key.startsWith("production_")
+    );
+    if (readOnlyField) {
+      return HttpResponse.json(
+        { message: `${readOnlyField} is read-only` },
+        { status: 400 }
+      );
+    }
+
+    const next: StoredDraft = syncProductionMirrorFields({
       ...ensurePayload(stored),
       draft: {
         ...ensurePayload(stored).draft,
         ...updates,
       },
       updated_at_ms: nowMs(),
-    };
+    });
 
     drafts.set(draftId, next);
 

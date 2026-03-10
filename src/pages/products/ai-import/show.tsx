@@ -59,6 +59,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  createEmptyPublishStateCollection,
   deleteProductDraft,
   getProductDraft,
   isTerminalStatus,
@@ -71,6 +72,9 @@ import {
   type ProductDraft,
   type ProductDraftPayload,
   type ProductDraftStatus,
+  type PublishState,
+  type PublishStateStatus,
+  type PublishTarget,
 } from "@/lib/admin-ai-product-drafts";
 import { canonicalizeProductUrl } from "@/lib/canonicalize-product-url";
 import {
@@ -1973,10 +1977,14 @@ function isUsableImageUrl(value: string): boolean {
 
 function validatePublishPayload(
   draftId: string,
-  payload: ProductDraftPayload & { draft_id: string }
+  payload: ProductDraftPayload & { draft_id: string; target: PublishTarget }
 ): string | null {
   if (payload.draft_id !== draftId) {
     return "Draft ID mismatch.";
+  }
+
+  if (payload.target !== "staging" && payload.target !== "production") {
+    return "Publish target must be staging or production.";
   }
 
   if (typeof payload.shipping_fee !== "number" || !Number.isFinite(payload.shipping_fee)) {
@@ -2170,6 +2178,133 @@ function statusBadgeClasses(status: ProductDraftStatus): string {
   }
 }
 
+function publishTargetLabel(target: PublishTarget): string {
+  return target === "staging" ? "Staging" : "Production";
+}
+
+function publishStateLabel(status: PublishStateStatus): string {
+  switch (status) {
+    case "NOT_PUBLISHED":
+      return "Not published";
+    case "PUBLISHING":
+      return "Publishing";
+    case "PUBLISHED":
+      return "Published";
+    case "FAILED":
+      return "Failed";
+    default:
+      return status;
+  }
+}
+
+function publishStateBadgeClasses(status: PublishStateStatus): string {
+  switch (status) {
+    case "PUBLISHED":
+      return "border-teal-200 bg-teal-50 text-teal-900";
+    case "FAILED":
+      return "border-rose-200 bg-rose-50 text-rose-900";
+    case "PUBLISHING":
+      return "border-amber-200 bg-amber-50 text-amber-900";
+    case "NOT_PUBLISHED":
+    default:
+      return "border-slate-200 bg-slate-50 text-slate-700";
+  }
+}
+
+function formatPublishedAt(ms: number | null): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) {
+    return "—";
+  }
+
+  return new Date(ms).toLocaleString();
+}
+
+function publishButtonLabel(
+  target: PublishTarget,
+  status: PublishStateStatus,
+  isPublishing: boolean
+): string {
+  const targetLabel = publishTargetLabel(target);
+  if (isPublishing) return `Publishing to ${targetLabel}...`;
+  if (status === "FAILED") return `Retry ${targetLabel}`;
+  if (status === "PUBLISHED") return `Published to ${targetLabel}`;
+  return `Publish to ${targetLabel}`;
+}
+
+function PublishStatePanel({
+  target,
+  state,
+  isPublishing,
+  isDisabled,
+  onPublish,
+}: {
+  target: PublishTarget;
+  state: PublishState;
+  isPublishing: boolean;
+  isDisabled: boolean;
+  onPublish: (target: PublishTarget) => void;
+}) {
+  const targetLabel = publishTargetLabel(target);
+  const hasPublishResult = state.published_at_ms != null || state.product_id || state.product_uuid;
+
+  return (
+    <Card>
+      <CardHeader className="gap-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">{targetLabel} publish</CardTitle>
+            <div className="mt-1 text-sm text-muted-foreground">
+              Publish state for the shared draft record.
+            </div>
+          </div>
+          <Badge variant="outline" className={publishStateBadgeClasses(state.status)}>
+            {publishStateLabel(state.status)}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <div className="grid gap-2 md:grid-cols-3">
+          <div>
+            <div className="text-muted-foreground">Published at</div>
+            <div>{formatPublishedAt(state.published_at_ms)}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Product ID</div>
+            <div className="font-mono text-xs">{state.product_id ?? "—"}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Product UUID</div>
+            <div className="font-mono text-xs">{state.product_uuid ?? "—"}</div>
+          </div>
+        </div>
+
+        {state.error ? (
+          <Alert variant="destructive">
+            <AlertTitle>{targetLabel} publish error</AlertTitle>
+            <AlertDescription>{state.error}</AlertDescription>
+          </Alert>
+        ) : null}
+
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs text-muted-foreground">
+            {hasPublishResult
+              ? "Backend-managed publish metadata is read-only."
+              : "This target has not been published yet."}
+          </div>
+          <Button
+            type="button"
+            variant={state.status === "PUBLISHED" ? "outline" : "default"}
+            disabled={isDisabled || state.status === "PUBLISHED"}
+            onClick={() => onPublish(target)}
+          >
+            {publishButtonLabel(target, state.status, isPublishing)}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function progressPercent(status: ProductDraftStatus): number {
   switch (status) {
     case "QUEUED_FOR_DRAFT":
@@ -2250,6 +2385,12 @@ export function AiProductDraftShow() {
   const isMountedRef = React.useRef(true);
 
   const draftPayload = React.useMemo(() => draft?.draft ?? null, [draft]);
+  const publishState = React.useMemo(
+    () => draft?.publish_state ?? createEmptyPublishStateCollection(),
+    [draft]
+  );
+  const stagingPublishState = publishState.staging;
+  const productionPublishState = publishState.production;
   const categoryQueryTrimmed = React.useMemo(() => categoryQuery.trim(), [categoryQuery]);
   const selectedAiImageModel = React.useMemo(
     () =>
@@ -2707,8 +2848,10 @@ export function AiProductDraftShow() {
 
   const hasCategoryIds = (editState?.categoryIds.length ?? 0) > 0;
   const publishBlockedByCategory = !hasCategoryIds;
+  const deleteBlockedByProductionPublish =
+    productionPublishState.status === "PUBLISHED";
 
-  const onPublish = async () => {
+  const onPublish = async (target: PublishTarget) => {
     if (!draftId) return;
     if (!editState) {
       open?.({
@@ -2742,6 +2885,7 @@ export function AiProductDraftShow() {
       const publishPayload = {
         ...finalPayload,
         draft_id: draftId,
+        target,
         visibility: publishVisibility,
       };
       const validationError = validatePublishPayload(draftId, publishPayload);
@@ -2754,12 +2898,37 @@ export function AiProductDraftShow() {
         return;
       }
       const result = await publishProductDraft(draftId, publishPayload);
-      const publishedVisibility =
-        typeof result.visibility === "boolean" ? result.visibility : publishVisibility;
+      const targetLabel = publishTargetLabel(result.target);
+      const productIdLabel =
+        typeof result.product_id === "number" || typeof result.product_id === "string"
+          ? String(result.product_id)
+          : null;
+      setDraft((prev) => {
+        if (!prev) return prev;
+        const nextPublishedAtMs =
+          result.target === "production" && result.published_at_ms != null
+            ? result.published_at_ms
+            : prev.published_at_ms;
+        const nextPublishedProductId =
+          result.target === "production" && productIdLabel
+            ? productIdLabel
+            : prev.published_product_id;
+
+        return {
+          ...prev,
+          publish_state: result.publish_state,
+          published_at_ms: nextPublishedAtMs,
+          published_product_id: nextPublishedProductId,
+        };
+      });
       open?.({
         type: "success",
-        message: "Published",
-        description: `Product ID: ${result.product_id} · ${publishedVisibility ? "已上架" : "未上架"}`,
+        message: result.idempotent_reused
+          ? `Already published to ${targetLabel}`
+          : `Published to ${targetLabel}`,
+        description: `${productIdLabel ? `Product ID: ${productIdLabel} · ` : ""}${
+          publishVisibility ? "已上架" : "未上架"
+        }`,
       });
       await refresh();
     } catch (e) {
@@ -2830,6 +2999,9 @@ export function AiProductDraftShow() {
       navigate("/products/drafts", { replace: true });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown error";
+      if (message.includes("cannot delete a published draft")) {
+        await refresh();
+      }
       open?.({ type: "error", message: "Delete failed", description: message });
     } finally {
       setIsDeleting(false);
@@ -3337,7 +3509,12 @@ export function AiProductDraftShow() {
             <Button
               variant="destructive"
               onClick={() => setIsDeleteDialogOpen(true)}
-              disabled={isDeleting || isLoading || !draft}
+              disabled={isDeleting || isLoading || !draft || deleteBlockedByProductionPublish}
+              title={
+                deleteBlockedByProductionPublish
+                  ? "Production-published drafts cannot be deleted."
+                  : undefined
+              }
             >
               {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
               Delete Draft
@@ -3408,16 +3585,50 @@ export function AiProductDraftShow() {
                 </Alert>
               )}
 
-              {draft.status === "PUBLISHED" && (
-                <Alert>
-                  <AlertTitle>Draft published</AlertTitle>
-                  <AlertDescription>
-                    {draft.published_product_id
-                      ? `Product ID: ${draft.published_product_id}`
-                      : "Published successfully."}
-                  </AlertDescription>
-                </Alert>
-              )}
+              <div className="grid gap-4 xl:grid-cols-2">
+                <PublishStatePanel
+                  target="staging"
+                  state={stagingPublishState}
+                  isPublishing={isPublishing}
+                  isDisabled={
+                    draft.status !== "READY_FOR_REVIEW" ||
+                    isPublishing ||
+                    isRejecting ||
+                    isSaving ||
+                    isDeleting ||
+                    isBatchEditing ||
+                    publishBlockedByCategory
+                  }
+                  onPublish={(target) => void onPublish(target)}
+                />
+                <PublishStatePanel
+                  target="production"
+                  state={productionPublishState}
+                  isPublishing={isPublishing}
+                  isDisabled={
+                    draft.status !== "READY_FOR_REVIEW" ||
+                    isPublishing ||
+                    isRejecting ||
+                    isSaving ||
+                    isDeleting ||
+                    isBatchEditing ||
+                    publishBlockedByCategory
+                  }
+                  onPublish={(target) => void onPublish(target)}
+                />
+              </div>
+
+              {publishBlockedByCategory && draft.status === "READY_FOR_REVIEW" ? (
+                <div className="text-xs text-destructive">
+                  Category is required before publishing to staging or production.
+                </div>
+              ) : null}
+
+              {deleteBlockedByProductionPublish ? (
+                <div className="text-xs text-muted-foreground">
+                  Delete is locked because this draft has already been published to production.
+                </div>
+              ) : null}
 
               {draft.status === "READY_FOR_REVIEW" && (
                 <div className="flex flex-col gap-4">
@@ -3476,19 +3687,6 @@ export function AiProductDraftShow() {
                           {isSaving ? "Saving..." : "Save changes"}
                         </Button>
                         <Button
-                          onClick={() => void onPublish()}
-                          disabled={
-                            isPublishing ||
-                            isRejecting ||
-                            isSaving ||
-                            isDeleting ||
-                            isBatchEditing ||
-                            publishBlockedByCategory
-                          }
-                        >
-                          {isPublishing ? "Publishing..." : "Publish"}
-                        </Button>
-                        <Button
                           variant="secondary"
                           onClick={() => void onReject()}
                           disabled={isPublishing || isRejecting || isDeleting || isBatchEditing}
@@ -3496,11 +3694,6 @@ export function AiProductDraftShow() {
                           {isRejecting ? "Rejecting..." : "Reject"}
                         </Button>
                       </div>
-                      {publishBlockedByCategory ? (
-                        <div className="text-xs text-destructive">
-                          Category is required before publish.
-                        </div>
-                      ) : null}
                     </div>
                   </div>
 

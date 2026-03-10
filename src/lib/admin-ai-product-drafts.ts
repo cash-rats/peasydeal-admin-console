@@ -39,6 +39,32 @@ export type ProductDraftStatus =
   | "FAILED"
   | "REJECTED";
 
+export type PublishTarget = "staging" | "production";
+
+export type PublishStateStatus =
+  | "NOT_PUBLISHED"
+  | "PUBLISHING"
+  | "PUBLISHED"
+  | "FAILED";
+
+export type PublishState = {
+  status: PublishStateStatus;
+  product_id: string | null;
+  product_uuid: string | null;
+  published_at_ms: number | null;
+  error: string | null;
+};
+
+export type PublishStateCollection = {
+  staging: PublishState;
+  production: PublishState;
+};
+
+export type PublishStateSummary = {
+  staging: { status: PublishStateStatus };
+  production: { status: PublishStateStatus };
+};
+
 export type ProductDraftPayload = {
   category_ids?: number[] | null;
   category_branch?:
@@ -84,6 +110,7 @@ export type ProductDraft = {
   updated_at_ms: number;
   published_at_ms: number | null;
   published_product_id: string | null;
+  publish_state: PublishStateCollection;
 };
 
 export type ProductDraftListItem = {
@@ -92,6 +119,7 @@ export type ProductDraftListItem = {
   url: string | null;
   thumbnail_url: string | null;
   updated_at_ms: number;
+  publish_state_summary: PublishStateSummary;
 };
 
 export type ListProductDraftsQuery = {
@@ -163,7 +191,7 @@ export async function getProductDraft(draftId: string): Promise<ProductDraft> {
     throw new Error(await parseApiErrorMessage(response, "Failed to load draft"));
   }
 
-  return response.json();
+  return normalizeProductDraft(await response.json().catch(() => null));
 }
 
 function isProductDraftStatus(value: unknown): value is ProductDraftStatus {
@@ -190,6 +218,110 @@ function toEpochMs(value: unknown): number {
     if (Number.isFinite(asDateMs)) return asDateMs;
   }
   return 0;
+}
+
+function isPublishStateStatus(value: unknown): value is PublishStateStatus {
+  return (
+    value === "NOT_PUBLISHED" ||
+    value === "PUBLISHING" ||
+    value === "PUBLISHED" ||
+    value === "FAILED"
+  );
+}
+
+function toNullableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function normalizePublishState(value: unknown): PublishState {
+  if (!value || typeof value !== "object") {
+    return {
+      status: "NOT_PUBLISHED",
+      product_id: null,
+      product_uuid: null,
+      published_at_ms: null,
+      error: null,
+    };
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    status: isPublishStateStatus(record.status) ? record.status : "NOT_PUBLISHED",
+    product_id: toNullableString(record.product_id),
+    product_uuid: toNullableString(record.product_uuid),
+    published_at_ms: (() => {
+      const ms = toEpochMs(record.published_at_ms);
+      return ms > 0 ? ms : null;
+    })(),
+    error: toNullableString(record.error),
+  };
+}
+
+export function createEmptyPublishStateCollection(): PublishStateCollection {
+  return {
+    staging: normalizePublishState(null),
+    production: normalizePublishState(null),
+  };
+}
+
+export function normalizePublishStateCollection(value: unknown): PublishStateCollection {
+  if (!value || typeof value !== "object") {
+    return createEmptyPublishStateCollection();
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    staging: normalizePublishState(record.staging),
+    production: normalizePublishState(record.production),
+  };
+}
+
+function normalizePublishStateSummary(value: unknown): PublishStateSummary {
+  const states = normalizePublishStateCollection(value);
+  return {
+    staging: { status: states.staging.status },
+    production: { status: states.production.status },
+  };
+}
+
+function normalizeProductDraft(payload: unknown): ProductDraft {
+  const record = payload && typeof payload === "object"
+    ? (payload as Record<string, unknown>)
+    : {};
+
+  return {
+    id: typeof record.id === "string" ? record.id : "",
+    status: isProductDraftStatus(record.status) ? record.status : "QUEUED_FOR_DRAFT",
+    draft:
+      record.draft && typeof record.draft === "object"
+        ? (record.draft as ProductDraftPayload)
+        : null,
+    error: toNullableString(record.error),
+    created_by: toNullableString(record.created_by),
+    created_at_ms: toEpochMs(record.created_at_ms ?? record.created_at),
+    updated_at_ms: toEpochMs(record.updated_at_ms ?? record.updated_at),
+    published_at_ms: (() => {
+      const ms = toEpochMs(record.published_at_ms ?? record.published_at);
+      return ms > 0 ? ms : null;
+    })(),
+    published_product_id: toNullableString(record.published_product_id),
+    publish_state: normalizePublishStateCollection(record.publish_state),
+  };
+}
+
+function stripReadonlyDraftFields(payload: ProductDraftPayload): ProductDraftPayload {
+  const nextPayload: ProductDraftPayload = { ...payload };
+  delete nextPayload.publish_state;
+  delete nextPayload.published_at_ms;
+  delete nextPayload.published_product_id;
+
+  for (const key of Object.keys(nextPayload)) {
+    if (key.startsWith("staging_") || key.startsWith("production_")) {
+      delete nextPayload[key];
+    }
+  }
+
+  return nextPayload;
 }
 
 export async function listProductDrafts(
@@ -242,6 +374,9 @@ export async function listProductDrafts(
                 ? record.thumbnail_url
                 : null,
             updated_at_ms,
+            publish_state_summary: normalizePublishStateSummary(
+              record.publish_state_summary
+            ),
           } satisfies ProductDraftListItem;
         })
         .filter((item): item is ProductDraftListItem => item !== null)
@@ -296,7 +431,7 @@ export async function updateProductDraft(
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(stripReadonlyDraftFields(payload)),
     }
   );
 
@@ -304,7 +439,7 @@ export async function updateProductDraft(
     throw new Error(await parseApiErrorMessage(response, "Failed to update draft"));
   }
 
-  return response.json();
+  return normalizeProductDraft(await response.json().catch(() => null));
 }
 
 export type UploadProductDraftImageRequest = {
@@ -375,13 +510,18 @@ export async function deleteProductDraft(
 
 export type PublishProductDraftRequest = {
   draft_id: string;
+  target: PublishTarget;
 } & ProductDraftPayload;
 
 export type PublishProductDraftResponse = {
+  ok: true;
   draft_id: string;
-  status: ProductDraftStatus;
-  product_id: string;
-  visibility?: boolean;
+  target: PublishTarget;
+  product_id: number | string;
+  product_uuid: string | null;
+  published_at_ms: number | null;
+  idempotent_reused: boolean;
+  publish_state: PublishStateCollection;
 };
 
 export async function publishProductDraft(
@@ -403,7 +543,28 @@ export async function publishProductDraft(
     throw new Error(await parseApiErrorMessage(response, "Failed to publish"));
   }
 
-  return response.json();
+  const responsePayload = (await response.json().catch(() => null)) as
+    | Record<string, unknown>
+    | null;
+
+  return {
+    ok: true,
+    draft_id:
+      typeof responsePayload?.draft_id === "string" ? responsePayload.draft_id : draftId,
+    target: responsePayload?.target === "staging" ? "staging" : "production",
+    product_id:
+      typeof responsePayload?.product_id === "number" ||
+      typeof responsePayload?.product_id === "string"
+        ? responsePayload.product_id
+        : "",
+    product_uuid: toNullableString(responsePayload?.product_uuid),
+    published_at_ms: (() => {
+      const ms = toEpochMs(responsePayload?.published_at_ms);
+      return ms > 0 ? ms : null;
+    })(),
+    idempotent_reused: responsePayload?.idempotent_reused === true,
+    publish_state: normalizePublishStateCollection(responsePayload?.publish_state),
+  };
 }
 
 export async function rejectProductDraft(

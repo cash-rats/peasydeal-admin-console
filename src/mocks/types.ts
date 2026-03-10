@@ -8,6 +8,27 @@ export type ProductDraftStatus =
   | "FAILED"
   | "REJECTED";
 
+export type PublishTarget = "staging" | "production";
+
+export type PublishStateStatus =
+  | "NOT_PUBLISHED"
+  | "PUBLISHING"
+  | "PUBLISHED"
+  | "FAILED";
+
+export type PublishState = {
+  status: PublishStateStatus;
+  product_id: string | null;
+  product_uuid: string | null;
+  published_at_ms: number | null;
+  error: string | null;
+};
+
+export type PublishStateCollection = {
+  staging: PublishState;
+  production: PublishState;
+};
+
 export type ProductDraftPayload = {
   category_ids?: number[] | null;
   category_branch?:
@@ -53,4 +74,5 @@ export type ProductDraft = {
   updated_at_ms: number;
   published_at_ms: number | null;
   published_product_id: string | null;
+  publish_state: PublishStateCollection;
 };

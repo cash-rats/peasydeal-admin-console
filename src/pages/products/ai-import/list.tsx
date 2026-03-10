@@ -38,6 +38,7 @@ import {
   listProductDrafts,
   type ProductDraftListItem,
   type ProductDraftStatus,
+  type PublishStateStatus,
 } from "@/lib/admin-ai-product-drafts";
 import { cn } from "@/lib/utils";
 import { ExternalLink, ImageOff, Loader2, Search, SquarePen, Trash2 } from "lucide-react";
@@ -250,12 +251,44 @@ function filterItemsByTab(items: ProductDraftListItem[], tab: DraftListTab) {
   switch (tab) {
     case "READY_FOR_REVIEW":
     case "FAILED":
-    case "PUBLISHED":
     case "REJECTED":
       return items.filter((item) => item.status === tab);
+    case "PUBLISHED":
+      return items.filter(
+        (item) => item.publish_state_summary.production.status === "PUBLISHED"
+      );
     case "ALL":
     default:
       return items;
+  }
+}
+
+function publishStatusLabel(status: PublishStateStatus): string {
+  switch (status) {
+    case "NOT_PUBLISHED":
+      return "Not published";
+    case "PUBLISHING":
+      return "Publishing";
+    case "PUBLISHED":
+      return "Published";
+    case "FAILED":
+      return "Failed";
+    default:
+      return status;
+  }
+}
+
+function publishStatusBadgeClasses(status: PublishStateStatus): string {
+  switch (status) {
+    case "PUBLISHED":
+      return "border-teal-200 bg-teal-50 text-teal-900";
+    case "FAILED":
+      return "border-rose-200 bg-rose-50 text-rose-900";
+    case "PUBLISHING":
+      return "border-amber-200 bg-amber-50 text-amber-900";
+    case "NOT_PUBLISHED":
+    default:
+      return "border-slate-200 bg-slate-50 text-slate-700";
   }
 }
 
@@ -375,7 +408,9 @@ export function AiProductDraftList() {
     () => ({
       ready: allItems.filter((item) => item.status === "READY_FOR_REVIEW").length,
       failed: allItems.filter((item) => item.status === "FAILED").length,
-      published: allItems.filter((item) => item.status === "PUBLISHED").length,
+      published: allItems.filter(
+        (item) => item.publish_state_summary.production.status === "PUBLISHED"
+      ).length,
       rejected: allItems.filter((item) => item.status === "REJECTED").length,
     }),
     [allItems]
@@ -579,12 +614,34 @@ export function AiProductDraftList() {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Badge
-                            variant={statusBadgeVariant(item.status)}
-                            className={statusBadgeClasses(item.status)}
-                          >
-                            {statusLabel(item.status)}
-                          </Badge>
+                          <div className="flex flex-col gap-2">
+                            <Badge
+                              variant={statusBadgeVariant(item.status)}
+                              className={statusBadgeClasses(item.status)}
+                            >
+                              {statusLabel(item.status)}
+                            </Badge>
+                            <div className="flex flex-wrap gap-1.5">
+                              <Badge
+                                variant="outline"
+                                className={publishStatusBadgeClasses(
+                                  item.publish_state_summary.staging.status
+                                )}
+                              >
+                                Staging:{" "}
+                                {publishStatusLabel(item.publish_state_summary.staging.status)}
+                              </Badge>
+                              <Badge
+                                variant="outline"
+                                className={publishStatusBadgeClasses(
+                                  item.publish_state_summary.production.status
+                                )}
+                              >
+                                Production:{" "}
+                                {publishStatusLabel(item.publish_state_summary.production.status)}
+                              </Badge>
+                            </div>
+                          </div>
                         </TableCell>
                         <TableCell
                           className="max-w-[170px] truncate font-mono text-[11px]"
@@ -632,7 +689,15 @@ export function AiProductDraftList() {
                               variant="ghost"
                               className="text-destructive hover:text-destructive"
                               onClick={() => onDeleteClick(item.id)}
-                              disabled={isDeletingDraftId !== null}
+                              disabled={
+                                isDeletingDraftId !== null ||
+                                item.publish_state_summary.production.status === "PUBLISHED"
+                              }
+                              title={
+                                item.publish_state_summary.production.status === "PUBLISHED"
+                                  ? "Production-published drafts cannot be deleted."
+                                  : undefined
+                              }
                             >
                               {isDeletingDraftId === item.id ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
