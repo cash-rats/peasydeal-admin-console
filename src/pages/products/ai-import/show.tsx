@@ -1376,6 +1376,8 @@ function DroppableImageContainer({
 }
 
 async function downloadImage(url: string, filename?: string) {
+  const hasExtension = (value: string) => /\.[a-z0-9]{2,5}$/i.test(value);
+
   try {
     const response = await fetch(url, { mode: "cors" });
     if (!response.ok) throw new Error("Failed to fetch image");
@@ -1384,9 +1386,13 @@ async function downloadImage(url: string, filename?: string) {
       blob.type === "image/png"
         ? ".png"
         : blob.type === "image/webp"
-          ? ".webp"
+        ? ".webp"
           : ".jpg";
-    const name = filename ?? `image_${Date.now()}${ext}`;
+    const name = filename
+      ? hasExtension(filename)
+        ? filename
+        : `${filename}${ext}`
+      : `image_${Date.now()}${ext}`;
     const blobUrl = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = blobUrl;
@@ -1395,10 +1401,47 @@ async function downloadImage(url: string, filename?: string) {
     anchor.click();
     document.body.removeChild(anchor);
     URL.revokeObjectURL(blobUrl);
+    return "downloaded" as const;
   } catch {
     // Fallback: open in new tab if CORS blocks the fetch
     window.open(url, "_blank");
+    return "opened_in_new_tab" as const;
   }
+}
+
+function sanitizeDownloadFileName(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed.length) return "image";
+
+  const normalized = trimmed
+    .replace(/[<>:"/\\|?*\x00-\x1F]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized.length) return "image";
+  return normalized.slice(0, 80).replace(/ /g, "_");
+}
+
+function getImageExtensionFromUrl(url: string): string {
+  try {
+    const pathname = new URL(url).pathname;
+    const match = pathname.match(/\.(png|jpe?g|webp|gif|bmp|svg)$/i);
+    if (!match) return "";
+    const extension = match[1].toLowerCase();
+    return extension === "jpeg" ? ".jpg" : `.${extension}`;
+  } catch {
+    return "";
+  }
+}
+
+function createBatchDownloadFileName(
+  label: string,
+  index: number,
+  url: string
+): string {
+  const prefix = String(index + 1).padStart(2, "0");
+  const extension = getImageExtensionFromUrl(url);
+  return `${prefix}_${sanitizeDownloadFileName(label)}${extension}`;
 }
 
 function DraggableImageCard({
@@ -2362,6 +2405,7 @@ export function AiProductDraftShow() {
   const [batchConfirmMode, setBatchConfirmMode] = React.useState<ImageAiEditMode | null>(null);
   const [batchEditState, setBatchEditState] = React.useState<BatchEditState | null>(null);
   const [lastBatchSession, setLastBatchSession] = React.useState<LastBatchSession | null>(null);
+  const [isDownloadingSelected, setIsDownloadingSelected] = React.useState(false);
   const [aiImageModel, setAiImageModel] = React.useState<GeminiImageEditModel>(
     DEFAULT_GEMINI_IMAGE_EDIT_MODEL
   );
@@ -3068,6 +3112,48 @@ export function AiProductDraftShow() {
     setSelectedImageKeys(new Set<BatchSelectionKey>());
   }, []);
 
+  const onDownloadSelected = React.useCallback(async () => {
+    if (isDownloadingSelected || selectedBatchTargets.length === 0) return;
+
+    setIsDownloadingSelected(true);
+
+    let downloadedCount = 0;
+    let openedInNewTabCount = 0;
+
+    try {
+      for (const [index, target] of selectedBatchTargets.entries()) {
+        const result = await downloadImage(
+          target.image.previewUrl,
+          createBatchDownloadFileName(target.label, index, target.image.previewUrl)
+        );
+
+        if (result === "opened_in_new_tab") {
+          openedInNewTabCount += 1;
+        } else {
+          downloadedCount += 1;
+        }
+      }
+
+      open?.({
+        type: "success",
+        message: "Selected images download started",
+        description:
+          openedInNewTabCount > 0
+            ? `${downloadedCount} file(s) downloaded, ${openedInNewTabCount} opened in a new tab because direct download was blocked.`
+            : `${downloadedCount} file(s) downloaded.`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown error";
+      open?.({
+        type: "error",
+        message: "Download selected failed",
+        description: message,
+      });
+    } finally {
+      setIsDownloadingSelected(false);
+    }
+  }, [isDownloadingSelected, open, selectedBatchTargets]);
+
   const openBatchEditConfirm = React.useCallback(
     (mode: ImageAiEditMode) => {
       if (isBatchEditing || selectedBatchTargetCount === 0) return;
@@ -3742,6 +3828,26 @@ export function AiProductDraftShow() {
                                   onClick={() => openBatchEditConfirm("remove_background")}
                                 >
                                   去背
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={
+                                    selectedImageKeys.size === 0 ||
+                                    isBatchEditing ||
+                                    isDownloadingSelected
+                                  }
+                                  onClick={() => void onDownloadSelected()}
+                                >
+                                  {isDownloadingSelected ? (
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <Download className="mr-2 h-4 w-4" />
+                                  )}
+                                  {isDownloadingSelected
+                                    ? "Downloading..."
+                                    : "Download selected"}
                                 </Button>
                                 <Button
                                   type="button"
